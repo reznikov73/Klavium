@@ -1,0 +1,28 @@
+# Конфигурация Cargo для репозитория Klavium.
+#
+# ВАЖНО (скорость распознавания речи):
+# cmake-крейт 0.1.58 при генераторе «Visual Studio» перезаписывает
+# CMAKE_*_FLAGS_RELEASE / _RELWITHDEBINFO флагами cc-крейта
+# («-nologo -MD -Brepro -W0»), из-за чего из флагов пропадает /O2 и whisper.cpp
+# (ggml) собирается БЕЗ оптимизаций — распознавание замедляется в 20–40 раз
+# (пример: 11 с аудио моделью base ≈ 43 с вместо ~2 с).
+# whisper-rs-sys пробрасывает любые переменные окружения с префиксами
+# CMAKE_/GGML_/WHISPER_ напрямую в cmake, поэтому задаём корректные
+# оптимизированные флаги явно — для release- и для debug-профиля.
+[env]
+CMAKE_C_FLAGS = { value = "/MD /O2", force = true }
+CMAKE_C_FLAGS_RELEASE = { value = "/MD /O2 /Ob2 /DNDEBUG", force = true }
+CMAKE_C_FLAGS_RELWITHDEBINFO = { value = "/MD /O2 /Ob2 /DNDEBUG", force = true }
+CMAKE_CXX_FLAGS = { value = "/utf-8 /MD /O2", force = true }
+CMAKE_CXX_FLAGS_RELEASE = { value = "/utf-8 /MD /O2 /Ob2 /DNDEBUG", force = true }
+CMAKE_CXX_FLAGS_RELWITHDEBINFO = { value = "/utf-8 /MD /O2 /Ob2 /DNDEBUG", force = true }
+
+# Вторая часть проблемы: при GGML_NATIVE=ON автодетект инструкций MSVC
+# (FindSIMD) не включал AVX2 — ggml собирался на скалярных ядрах.
+# Задаём набор инструкций явно (как у пресета haswell в ggml).
+# Требование к железу: CPU с AVX2 (Haswell 2013+).
+GGML_NATIVE = { value = "OFF", force = true }
+GGML_SSE42 = { value = "ON", force = true }
+GGML_AVX = { value = "ON", force = true }
+GGML_AVX2 = { value = "ON", force = true }
+GGML_BMI2 = { value = "ON", force = true }

@@ -1,0 +1,778 @@
+[
+  {
+    "text": "ghbdtn",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "привет",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "Ghbdtn",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "Привет",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "GHBDTN",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "ПРИВЕТ",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "hf,jnf",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "работа",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "ljv",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "дом",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "ltkfq",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "делай",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "xthtp",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "через",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "vj;yj",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "можно",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "rfr ltkf",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "как дела",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "gjyzk",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "понял",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "ybxtuj",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "ничего",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "rfrjq",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "какой",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "dctv",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "всем",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "ghjcnj",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "просто",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "ntcn",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "тест",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "xtkjdtr",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "человек",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "gj;fkeqcnf",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "пожалуйста",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "nfhtkrf",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "тарелка",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "rjvgm.nth",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "rjvgm.nth",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "djn",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "вот",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "nfr",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "так",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "yj",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "но",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "ye",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "ye",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "vbh",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "мир",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "руддщ",
+    "layout": "ru",
+    "context": [],
+    "needs": true,
+    "corrected": "hello",
+    "confidence": 0.95,
+    "target": "en"
+  },
+  {
+    "text": "Руддщ",
+    "layout": "ru",
+    "context": [],
+    "needs": true,
+    "corrected": "Hello",
+    "confidence": 0.95,
+    "target": "en"
+  },
+  {
+    "text": "РУДДЩ",
+    "layout": "ru",
+    "context": [],
+    "needs": true,
+    "corrected": "HELLO",
+    "confidence": 0.95,
+    "target": "en"
+  },
+  {
+    "text": "привет",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "привет",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "привет",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "привет",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "Привет",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "Привет",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "ПРИВЕТ",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "ПРИВЕТ",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "бабушка",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "бабушка",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "hello",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "hello",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "world",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "world",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "test",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "test",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "the",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "the",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "ok",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "ok",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "can't",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "can't",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "don't",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "don't",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "hello, world",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "hello, world",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "привет, мир",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "привет, мир",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": ",f,eirf",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "бабушка",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": ",f,eirf",
+    "layout": "ru",
+    "context": [],
+    "needs": true,
+    "corrected": "бабушка",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "eirf,",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "eirf,",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": ",f,eirf,",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": ",f,eirf,",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "eirf",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "ушка",
+    "confidence": 0.3,
+    "target": "ru"
+  },
+  {
+    "text": "eirf",
+    "layout": "ru",
+    "context": [],
+    "needs": true,
+    "corrected": "eirf",
+    "confidence": 0.3,
+    "target": "en"
+  },
+  {
+    "text": "'nj",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "это",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "xnj",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "что",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "rfr",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "как",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "dct",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "все",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "ёжik",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "ёжik",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "ёжik",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "ёжik",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "ghbdtn 123",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "привет 123",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "ghbdtn!",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "привет!",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "ghbdtn?",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "привет?",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "ghbdtn;",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "ghbdtn;",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "привет 123",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "привет 123",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "ghbdtn 123 привет",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "ghbdtn 123 привет",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "я",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "я",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "a",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "a",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "f",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "f",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "в",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "в",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "fd",
+    "layout": "en",
+    "context": [],
+    "needs": true,
+    "corrected": "ав",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "цу",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "цу",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "123",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "123",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "!!!",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "!!!",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "...",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "...",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "---",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "---",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "@#$",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "@#$",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "qwerty",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "qwerty",
+    "confidence": 0.0,
+    "target": "ru"
+  },
+  {
+    "text": "asdfgh",
+    "layout": "en",
+    "context": [],
+    "needs": false,
+    "corrected": "asdfgh",
+    "confidence": 0.0,
+    "target": "ru"
+  },
+  {
+    "text": "йцукен",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "йцукен",
+    "confidence": 0.0,
+    "target": "en"
+  },
+  {
+    "text": "фыва",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "фыва",
+    "confidence": 0.0,
+    "target": "en"
+  },
+  {
+    "text": "ёжик",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "ёжик",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "ежик",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "ежик",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "ёлки",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "ёлки",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "елки",
+    "layout": "ru",
+    "context": [],
+    "needs": false,
+    "corrected": "елки",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": "ghbdtn",
+    "layout": null,
+    "context": [],
+    "needs": false,
+    "corrected": "ghbdtn",
+    "confidence": 0.0,
+    "target": "ru"
+  },
+  {
+    "text": "привет",
+    "layout": null,
+    "context": [],
+    "needs": false,
+    "corrected": "привет",
+    "confidence": 0.0,
+    "target": null
+  },
+  {
+    "text": ",f,eirf",
+    "layout": null,
+    "context": [],
+    "needs": true,
+    "corrected": "бабушка",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "ghbdtn",
+    "layout": "en",
+    "context": [
+      "привет",
+      "мир"
+    ],
+    "needs": true,
+    "corrected": "привет",
+    "confidence": 0.99,
+    "target": "ru"
+  },
+  {
+    "text": "ghbdtn",
+    "layout": "en",
+    "context": [
+      "hello"
+    ],
+    "needs": true,
+    "corrected": "привет",
+    "confidence": 0.95,
+    "target": "ru"
+  },
+  {
+    "text": "ghbdtn",
+    "layout": "en",
+    "context": [
+      "привет",
+      "hello",
+      "мир"
+    ],
+    "needs": true,
+    "corrected": "привет",
+    "confidence": 0.99,
+    "target": "ru"
+  },
+  {
+    "text": "руддщ",
+    "layout": "ru",
+    "context": [
+      "hello"
+    ],
+    "needs": true,
+    "corrected": "hello",
+    "confidence": 0.99,
+    "target": "en"
+  }
+]

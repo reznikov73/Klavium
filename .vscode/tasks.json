@@ -1,0 +1,179 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "cargo build",
+            "detail": "debug-сборка всего воркспейса. Задача по умолчанию (Ctrl+Shift+B), из неё запускается отладка F5; результат — target/debug/klavium.exe.",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "build",
+                "--workspace"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "cargo build release",
+            "detail": "release-сборка всего воркспейса (thin LTO, strip): оптимизированный target/release/klavium.exe без отладочных символов. Основа для установщика.",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "build",
+                "--workspace",
+                "--release"
+            ],
+            "group": "build",
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "cargo rebuild",
+            "detail": "Полная пересборка: сначала «cargo clean», затем «cargo build» (по очереди). Нужна после смены зависимостей или странных ошибок сборки; занимает несколько минут.",
+            "dependsOn": [
+                "cargo clean",
+                "cargo build"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
+        },
+        {
+            "label": "cargo clean",
+            "detail": "Удаляет каталог target/ со всеми артефактами сборки. Освобождает место на диске; следующая сборка после этого будет долгой.",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "clean"
+            ],
+            "group": "build",
+            "problemMatcher": []
+        },
+        {
+            "label": "cargo test",
+            "detail": "Все тесты воркспейса: конвертация/детекция/раскладки, статистика, плюс контрольный корпус (85 кейсов).",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "test",
+                "--workspace"
+            ],
+            "group": "test",
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "cargo clippy",
+            "detail": "Строгий линтер по всем целям: с -D warnings любое предупреждение считается ошибкой. Обязательная проверка перед коммитом.",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "clippy",
+                "--workspace",
+                "--all-targets",
+                "--",
+                "-D",
+                "warnings"
+            ],
+            "group": "test",
+            "problemMatcher": [
+                "$rustc"
+            ]
+        },
+        {
+            "label": "cargo fmt",
+            "detail": "Проверка форматирования (--check), файлы не меняются. Если находит отклонения — выполните в терминале «cargo fmt --all».",
+            "type": "shell",
+            "command": "cargo",
+            "args": [
+                "fmt",
+                "--all",
+                "--",
+                "--check"
+            ],
+            "group": "test"
+        },
+        {
+            "label": "Закрыть запущенный Klavium",
+            "detail": "Завершает все процессы klavium.exe (включая установленный экземпляр). Нужно перед пересборкой: запущенный exe держит файл и мешает линковке (os error 5).",
+            "type": "shell",
+            "command": "powershell",
+            "args": [
+                "-NoProfile",
+                "-Command",
+                "Get-Process klavium -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; exit 0"
+            ],
+            "presentation": {
+                "reveal": "silent",
+                "echo": false,
+                "close": true
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "подготовка к отладке",
+            "detail": "Автозапуск перед F5 (preLaunchTask из launch.json): сначала «Закрыть запущенный Klavium», затем «cargo build» — по очереди.",
+            "dependsOn": [
+                "Закрыть запущенный Klavium",
+                "cargo build"
+            ],
+            "dependsOrder": "sequence",
+            "problemMatcher": []
+        },
+        {
+            "label": "Сборка установщика",
+            "detail": "release-сборка klavium.exe, затем NSIS-установщик и portable zip в папке dist/ (tools/build_dist.ps1)",
+            "type": "shell",
+            "command": "pwsh",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}\\tools\\build_dist.ps1"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "problemMatcher": [
+                "$rustc"
+            ],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        },
+        {
+            "label": "Сборка установщика (без пересборки exe)",
+            "detail": "Только упаковка уже собранного target/release/klavium.exe (быстро). Требует, чтобы релиз был собран ранее.",
+            "type": "shell",
+            "command": "pwsh",
+            "args": [
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                "${workspaceFolder}\\tools\\build_dist.ps1",
+                "-SkipBuild"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "group": "build",
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "dedicated",
+                "clear": true
+            }
+        }
+    ]
+}

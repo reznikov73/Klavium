@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/klavium-core",
+    "crates/klavium-platform",
+    "crates/klavium-ui",
+    "crates/klavium-app",
+]
+
+# Релизная сборка: тонкий LTO и обрезка символов — меньше и быстрее exe.
+[profile.release]
+lto = "thin"
+strip = true
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+authors = ["Klavium contributors"]
+description = "Фоновая утилита для Windows: автоматическое исправление раскладки текста"
+
+# ---------- workspace-level lints ----------
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+# Specifically allowed (per-crate or per-situation overrides live in each crate)
+must_use_candidate = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"

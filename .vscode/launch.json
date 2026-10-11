@@ -1,0 +1,17 @@
+{
+    "version": "0.3.0",
+    "configurations": [
+        {
+            "type": "cppvsdbg",
+            "request": "launch",
+            "name": "Отладка: Klavium (приложение)",
+            "program": "${workspaceFolder}/target/debug/klavium.exe",
+            "cwd": "${workspaceFolder}",
+            "console": "internalConsole",
+            "environment": [
+                { "name": "KLAVIUM_APP_SHOW_SETTINGS", "value": "1" }
+            ],
+            "preLaunchTask": "подготовка к отладке"
+        }
+    ]
+}

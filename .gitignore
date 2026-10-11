@@ -1,0 +1,21 @@
+# Build artifacts
+target/
+dist/
+
+# Debug symbols
+*.pdb
+*.ilk
+*.obj
+*.exp
+# Logs
+logs/
+*.log
+# IDE
+.vs/
+*.suo
+*.user
+*.sln.ide
+# OS
+.DS_Store
+Thumbs.db
+# Cargo workspace: Cargo.lock версионируется (проект-приложение, не библиотека)
