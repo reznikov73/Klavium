@@ -1,7 +1,7 @@
 //! Системные звуковые сигналы (Console Beep).
 //!
-//! Паттерны: EN — один сигнал; RU — два (пауза 30 мс);
-//! SWITCH — три (паузы 20 мс). Параметры — из конфигурации.
+//! Один сигнал — [`beep`]; последовательность по настройкам звука (число
+//! сигналов, пауза между ними, частота, длительность) — [`play_spec`].
 
 use std::thread;
 use std::time::Duration;
@@ -24,35 +24,22 @@ pub fn beep(frequency: u32, duration_ms: u32) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Звук «английское слово»: один сигнал.
+/// Проиграть звук по его настройкам: `count` сигналов с паузой `pause_ms`.
+///
+/// Тумблер (`enabled`) здесь не проверяется: кнопка «Прослушать» должна
+/// играть и выключенный звук. Рабочее проигрывание проверяет `enabled`
+/// на уровне звукового сервиса.
 ///
 /// # Errors
 ///
 /// Ошибка Win32 `Beep`.
-pub fn play_en(spec: &SoundSpec) -> anyhow::Result<()> {
-    beep(spec.frequency, spec.duration_ms)
-}
-
-/// Звук «русское слово»: два сигнала с паузой 30 мс.
-///
-/// # Errors
-///
-/// Ошибка Win32 `Beep`.
-pub fn play_ru(spec: &SoundSpec) -> anyhow::Result<()> {
-    beep(spec.frequency, spec.duration_ms)?;
-    thread::sleep(Duration::from_millis(30));
-    beep(spec.frequency, spec.duration_ms)
-}
-
-/// Звук «смена раскладки»: три сигнала с паузами 20 мс.
-///
-/// # Errors
-///
-/// Ошибка Win32 `Beep`.
-pub fn play_switch(spec: &SoundSpec) -> anyhow::Result<()> {
-    beep(spec.frequency, spec.duration_ms)?;
-    thread::sleep(Duration::from_millis(20));
-    beep(spec.frequency, spec.duration_ms)?;
-    thread::sleep(Duration::from_millis(20));
-    beep(spec.frequency, spec.duration_ms)
+pub fn play_spec(spec: &SoundSpec) -> anyhow::Result<()> {
+    let count = spec.count.clamp(1, 10);
+    for index in 0..count {
+        if index > 0 {
+            thread::sleep(Duration::from_millis(u64::from(spec.pause_ms)));
+        }
+        beep(spec.frequency, spec.duration_ms)?;
+    }
+    Ok(())
 }

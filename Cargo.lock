@@ -2312,7 +2312,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "klavium-app"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "cpal",
@@ -2335,7 +2335,7 @@ dependencies = [
 
 [[package]]
 name = "klavium-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "serde",
@@ -2345,7 +2345,7 @@ dependencies = [
 
 [[package]]
 name = "klavium-platform"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "klavium-core",
@@ -2355,7 +2355,7 @@ dependencies = [
 
 [[package]]
 name = "klavium-ui"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "eframe",

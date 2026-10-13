@@ -151,6 +151,7 @@ fn main() -> anyhow::Result<()> {
         shared: Arc::clone(&shared),
         stats: Arc::clone(&stats_service),
         voice: Arc::clone(&voice_service),
+        sound: Arc::clone(&sound_service),
         downloads: models::ModelDownloader::new(models_dir),
         vosk_install: models::VoskInstaller::new(paths.data_dir.clone()),
         data_move: Arc::new(DataDirShared::new(paths.data_dir.clone())),
@@ -165,6 +166,9 @@ fn main() -> anyhow::Result<()> {
     // в трее или повторный запуск); на каждое открытие окно создаётся заново.
     let smoke = std::env::var("KLAVIUM_APP_SMOKE").is_ok();
     run_ui_loop(&ui_runtime, &ui_rx, should_open_settings() || smoke, smoke);
+    // Отпускаем Arc движка до ожидания событийного потока: иначе канал
+    // событий никогда не закроется и `events_thread.join()` залипнет.
+    drop(ui_runtime);
 
     keyboard_hook.uninstall();
     voice_service.shutdown();
@@ -182,6 +186,7 @@ struct UiRuntime {
     shared: SharedConfig,
     stats: Arc<stats::StatsService>,
     voice: Arc<voice::VoiceService>,
+    sound: Arc<sound::SoundService>,
     downloads: Arc<models::ModelDownloader>,
     vosk_install: Arc<models::VoskInstaller>,
     data_move: Arc<DataDirShared>,
@@ -207,6 +212,7 @@ fn run_ui_loop(runtime: &UiRuntime, ui_rx: &mpsc::Receiver<()>, mut open_now: bo
                 shared: Arc::clone(&runtime.shared),
                 stats: Arc::clone(&runtime.stats),
                 voice: Arc::clone(&runtime.voice),
+                sound: Arc::clone(&runtime.sound),
                 downloads: Arc::clone(&runtime.downloads),
                 vosk_install: Arc::clone(&runtime.vosk_install),
                 data_move: Arc::clone(&runtime.data_move),
@@ -240,6 +246,7 @@ struct UiContext {
     shared: SharedConfig,
     stats: Arc<stats::StatsService>,
     voice: Arc<voice::VoiceService>,
+    sound: Arc<sound::SoundService>,
     downloads: Arc<models::ModelDownloader>,
     vosk_install: Arc<models::VoskInstaller>,
     data_move: Arc<DataDirShared>,
@@ -310,6 +317,7 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
     let voice_test_start = Arc::clone(&ui.voice);
     let voice_test_stop = Arc::clone(&ui.voice);
     let voice_test_state = Arc::clone(&ui.voice);
+    let sound_preview = Arc::clone(&ui.sound);
     let data_move_change = Arc::clone(&ui.data_move);
     let data_move_status = Arc::clone(&ui.data_move);
     let downloads_start = Arc::clone(&ui.downloads);
@@ -329,6 +337,7 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
             tracing::info!(target: "klavium", "настройки сохранены");
             Ok(())
         }),
+        sound_preview: Box::new(move |spec| sound_preview.play_spec(spec)),
         stats_snapshot: Box::new(move || stats_snapshot.snapshot()),
         stats_reset: Box::new(move || stats_reset.reset()),
         voice_toggle: Box::new(move || voice_toggle.toggle()),

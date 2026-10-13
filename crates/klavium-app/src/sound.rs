@@ -1,7 +1,8 @@
 //! Звуковой сервис: сигналы через системный Beep в выделенном потоке.
 //!
-//! Паттерны: EN — один сигнал; RU — два (пауза 30 мс);
-//! SWITCH — три (паузы 20 мс). Параметры берутся из конфигурации на лету.
+//! Рисунок каждого звука (число сигналов, пауза, частота, длительность)
+//! и тумблер «включён» берутся из конфигурации на лету. Отдельный вид
+//! запроса — проигрывание произвольных настроек (кнопка «Прослушать»).
 
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, PoisonError};
@@ -27,29 +28,49 @@ pub enum SoundKind {
     VoiceStop,
 }
 
+/// Запрос на проигрывание: рабочий звук по виду или произвольные настройки.
+enum PlayRequest {
+    /// Звук события приложения (параметры — из конфигурации).
+    Kind(SoundKind),
+    /// Произвольные параметры (кнопка «Прослушать» в настройках).
+    Spec(SoundSpec),
+}
+
 /// Сервис воспроизведения (неблокирующий: сигналы играет отдельный поток).
 pub struct SoundService {
-    tx: Sender<SoundKind>,
+    tx: Sender<PlayRequest>,
 }
 
 impl SoundService {
     /// Запустить сервис с общим доступом к конфигурации.
     #[must_use]
     pub fn spawn(config: SharedConfig) -> Arc<Self> {
-        let (tx, rx) = mpsc::channel::<SoundKind>();
+        let (tx, rx) = mpsc::channel::<PlayRequest>();
         let _ = thread::Builder::new()
             .name("sound".to_string())
             .spawn(move || {
-                while let Ok(kind) = rx.recv() {
-                    play_kind(&config, kind);
+                while let Ok(request) = rx.recv() {
+                    match request {
+                        PlayRequest::Kind(kind) => play_kind(&config, kind),
+                        // «Прослушать»: играет и выключенный звук, чтобы можно
+                        // было послушать его перед включением тумблера.
+                        PlayRequest::Spec(spec) => {
+                            let _ = beep::play_spec(&spec);
+                        }
+                    }
                 }
             });
         Arc::new(Self { tx })
     }
 
-    /// Проиграть сигнал (неблокирующе).
+    /// Проиграть сигнал события (неблокирующе).
     pub fn play(&self, kind: SoundKind) {
-        let _ = self.tx.send(kind);
+        let _ = self.tx.send(PlayRequest::Kind(kind));
+    }
+
+    /// Проиграть звук с заданными настройками (неблокирующе).
+    pub fn play_spec(&self, spec: SoundSpec) {
+        let _ = self.tx.send(PlayRequest::Spec(spec));
     }
 }
 
@@ -64,14 +85,7 @@ fn play_kind(config: &SharedConfig, kind: SoundKind) {
             SoundKind::VoiceStop => guard.sounds.voice_stop.clone(),
         }
     };
-
-    let _ = match kind {
-        SoundKind::En => beep::play_en(&spec),
-        SoundKind::Ru => beep::play_ru(&spec),
-        SoundKind::Switch => beep::play_switch(&spec),
-        // Голосовые сигналы: одиночные (старт/стоп — из конфига).
-        SoundKind::VoiceStart | SoundKind::VoiceStop => {
-            beep::beep(spec.frequency, spec.duration_ms)
-        }
-    };
+    if spec.enabled {
+        let _ = beep::play_spec(&spec);
+    }
 }

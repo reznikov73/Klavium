@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText};
-use klavium_core::config::AppConfig;
+use klavium_core::config::{AppConfig, SoundSpec};
 use klavium_core::stats::StatsData;
 use klavium_core::voice::{DownloadStatus, RecognitionTest, MODELS};
 
@@ -22,6 +22,8 @@ pub struct SettingsContext {
     pub config: AppConfig,
     /// Колбэк сохранения.
     pub on_save: SaveHandler,
+    /// Проиграть звук с заданными настройками (кнопка «Прослушать»).
+    pub sound_preview: Box<dyn Fn(SoundSpec) + 'static>,
     /// Снимок статистики для вкладки «Статистика».
     pub stats_snapshot: Box<dyn Fn() -> StatsData + 'static>,
     /// Сброс статистики.
@@ -134,6 +136,7 @@ struct SettingsApp {
     section: Section,
     status: Option<(String, bool)>,
     on_save: SaveHandler,
+    sound_preview: Box<dyn Fn(SoundSpec) + 'static>,
     stats_snapshot: Box<dyn Fn() -> StatsData + 'static>,
     stats_reset: Box<dyn Fn() + 'static>,
     voice_toggle: Box<dyn Fn() + 'static>,
@@ -163,6 +166,7 @@ impl SettingsApp {
             section: initial_section(),
             status: None,
             on_save: context.on_save,
+            sound_preview: context.sound_preview,
             stats_snapshot: context.stats_snapshot,
             stats_reset: context.stats_reset,
             voice_toggle: context.voice_toggle,
@@ -318,13 +322,17 @@ impl SettingsApp {
         ui.heading("Звуки");
         ui.add_space(4.0);
         ui.label(
-            RichText::new("Частота (Гц) и длительность (мс). Проигрывание — в фазе сервисов.")
-                .small()
-                .weak(),
+            RichText::new(
+                "У каждого звука: тумблер, число сигналов, пауза между ними, частота и длительность. \
+                 «Прослушать» играет с текущими значениями — можно до «Сохранить».",
+            )
+            .small()
+            .weak(),
         );
         ui.add_space(8.0);
+        let preview = self.sound_preview.as_ref();
         let sounds = &mut self.config.sounds;
-        let rows: [(&str, &mut klavium_core::config::SoundSpec); 5] = [
+        let rows: [(&str, &mut SoundSpec); 5] = [
             ("Английское слово", &mut sounds.en),
             ("Русское слово", &mut sounds.ru),
             ("Смена раскладки", &mut sounds.switch),
@@ -333,18 +341,41 @@ impl SettingsApp {
         ];
         for (title, spec) in rows {
             ui.horizontal(|ui| {
-                ui.label(format!("{title}:"));
+                toggle_switch(ui, &mut spec.enabled);
+                ui.label(RichText::new(title).strong());
+            });
+            ui.horizontal(|ui| {
+                ui.add_space(26.0);
+                ui.add(
+                    egui::DragValue::new(&mut spec.count)
+                        .range(1..=10)
+                        .suffix(" сигн."),
+                )
+                .on_hover_text("Сколько сигналов в последовательности");
+                ui.add(
+                    egui::DragValue::new(&mut spec.pause_ms)
+                        .range(10..=1000)
+                        .prefix("пауза ")
+                        .suffix(" мс"),
+                )
+                .on_hover_text("Пауза между сигналами (при одном сигнале не важна)");
                 ui.add(
                     egui::DragValue::new(&mut spec.frequency)
                         .range(200..=4000)
                         .suffix(" Гц"),
-                );
+                )
+                .on_hover_text("Частота сигнала");
                 ui.add(
                     egui::DragValue::new(&mut spec.duration_ms)
                         .range(10..=2000)
                         .suffix(" мс"),
-                );
+                )
+                .on_hover_text("Длительность одного сигнала");
+                if ui.button("🔊 Прослушать").clicked() {
+                    preview(spec.clone());
+                }
             });
+            ui.add_space(10.0);
         }
     }
 
@@ -560,6 +591,32 @@ impl SettingsApp {
         });
         ui.label(RichText::new(status).small().weak());
     }
+}
+
+/// Тумблер вкл/выкл в стиле переключателя (зелёный = включено).
+fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
+    let (rect, mut response) = ui.allocate_exact_size(egui::vec2(36.0, 18.0), egui::Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    let progress = ui.ctx().animate_bool(response.id, *on);
+    let radius = rect.height() / 2.0;
+    let background = if *on {
+        Color32::from_rgb(87, 200, 120)
+    } else {
+        Color32::from_rgb(90, 92, 98)
+    };
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(9), background);
+    let travel = 2.0_f32.mul_add(-radius, rect.width());
+    let knob_x = travel.mul_add(progress, rect.left() + radius);
+    ui.painter().circle_filled(
+        egui::pos2(knob_x, rect.center().y),
+        radius - 2.0,
+        Color32::WHITE,
+    );
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Поднять и сфокусировать уже открытое окно настроек (клик «Настройки»
