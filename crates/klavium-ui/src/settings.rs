@@ -60,7 +60,11 @@ pub struct SettingsContext {
     pub smoke_seconds: Option<u64>,
 }
 
-/// Запустить цикл приложения настроек (блокирует вызывающий поток до выхода).
+/// Запустить окно настроек (блокирует вызывающий поток, пока окно открыто).
+///
+/// Жизненный цикл: окно создаётся при открытии и **закрывается по-настоящему**
+/// (в трей уходит только приложение целиком). Скрытое eframe-окно на Windows
+/// неразбудимо корректно — цикл winit зависает и крутит CPU.
 ///
 /// # Errors
 ///
@@ -77,6 +81,8 @@ pub fn run(context: SettingsContext) -> anyhow::Result<()> {
             .with_inner_size([780.0, 560.0])
             .with_min_inner_size([640.0, 420.0])
             .with_visible(context.open_on_start),
+        // Окно живёт, пока открыто: закрытие — штатный возврат из run_native.
+        run_and_return: true,
         ..Default::default()
     };
     eframe::run_native(
@@ -126,8 +132,6 @@ struct SettingsApp {
     config: AppConfig,
     original: AppConfig,
     section: Section,
-    visible: bool,
-    quitting: bool,
     status: Option<(String, bool)>,
     on_save: SaveHandler,
     stats_snapshot: Box<dyn Fn() -> StatsData + 'static>,
@@ -157,8 +161,6 @@ impl SettingsApp {
             original: context.config.clone(),
             config: context.config,
             section: initial_section(),
-            visible: context.open_on_start,
-            quitting: false,
             status: None,
             on_save: context.on_save,
             stats_snapshot: context.stats_snapshot,
@@ -180,18 +182,6 @@ impl SettingsApp {
             smoke_seconds: context.smoke_seconds,
             started: Instant::now(),
         }
-    }
-
-    fn show_window(&mut self, ctx: &egui::Context) {
-        self.visible = true;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-        ctx.request_repaint();
-    }
-
-    fn hide_window(&mut self, ctx: &egui::Context) {
-        self.visible = false;
-        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
     fn save(&mut self) {
@@ -256,7 +246,9 @@ impl SettingsApp {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Скрыть в трей").clicked() {
-                        self.hide_window(ctx);
+                        // Закрываем окно по-настоящему: приложение остаётся в трее,
+                        // окно будет создано заново при следующем открытии.
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     ui.label(
                         RichText::new("Выход: трей → «Выход» или Ctrl+Shift+Q")
@@ -570,35 +562,34 @@ impl SettingsApp {
     }
 }
 
+/// Поднять и сфокусировать уже открытое окно настроек (клик «Настройки»
+/// или «Статистика» в трее).
+fn show_window(ctx: &egui::Context) {
+    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+    ctx.request_repaint();
+}
+
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // События меню трея (передаёт поток-наблюдатель из приложения)
         while let Some(id) = crate::tray::pop_queued_event(&self.tray_queue) {
             match id.as_str() {
-                crate::tray::MENU_SETTINGS => self.show_window(ctx),
+                crate::tray::MENU_SETTINGS => show_window(ctx),
                 crate::tray::MENU_STATS => {
                     self.section = Section::Statistics;
-                    self.show_window(ctx);
+                    show_window(ctx);
                 }
                 crate::tray::MENU_VOICE => (self.voice_toggle)(),
                 crate::tray::MENU_QUIT => {
-                    self.quitting = true;
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 _ => {}
             }
         }
 
-        // Закрытие окна пользователем — скрываем в трей, не выходим
-        if ctx.input(|i| i.viewport().close_requested()) && !self.quitting {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            self.hide_window(ctx);
-        }
-
         // Дымовой режим: авто-выход по таймеру
         if let Some(seconds) = self.smoke_seconds {
             if self.started.elapsed() >= Duration::from_secs(seconds) {
-                self.quitting = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
@@ -607,9 +598,7 @@ impl eframe::App for SettingsApp {
         // и дымовой таймер должны работать независимо от потока событий окна.
         ctx.request_repaint_after(Duration::from_millis(200));
 
-        if self.visible {
-            self.draw(ctx);
-        }
+        self.draw(ctx);
     }
 }
 

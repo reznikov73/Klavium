@@ -1,18 +1,24 @@
 //! Работа с окнами, фокусом и кареткой ввода.
 
 use std::mem::size_of;
+use std::sync::OnceLock;
 use std::thread::sleep;
 use std::time::Duration;
 
-use windows_sys::Win32::Foundation::{HWND, POINT};
+use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT};
 use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
-use windows_sys::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
+};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    AllowSetForegroundWindow, DispatchMessageW, FindWindowW, GetCaretPos, GetClassNameW,
-    GetCursorPos, GetForegroundWindow, GetGUIThreadInfo, GetWindowTextW, GetWindowThreadProcessId,
-    MsgWaitForMultipleObjectsEx, PeekMessageW, SetForegroundWindow, ShowWindow, TranslateMessage,
-    GUITHREADINFO, MSG, PM_REMOVE, QS_ALLINPUT, SW_SHOW, SW_SHOWNOACTIVATE,
+    AllowSetForegroundWindow, CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows,
+    FindWindowW, GetCaretPos, GetClassNameW, GetCursorPos, GetForegroundWindow, GetGUIThreadInfo,
+    GetWindowTextW, GetWindowThreadProcessId, MsgWaitForMultipleObjectsEx, PeekMessageW,
+    PostMessageW, RegisterClassW, RegisterWindowMessageW, SetForegroundWindow, ShowWindow,
+    TranslateMessage, GUITHREADINFO, MSG, PM_REMOVE, QS_ALLINPUT, SW_HIDE, SW_SHOWNOACTIVATE,
+    WNDCLASSW,
 };
 
 /// Дескриптор активного (foreground) окна.
@@ -221,22 +227,93 @@ pub fn cursor_pos() -> (i32, i32) {
     (point.x, point.y)
 }
 
-/// Показать (и поднять) окно настроек Klavium по заголовку.
+/// Класс скрытого окна-приёмника команд «показать настройки».
+const CONTROL_CLASS: &str = "KlaviumControl";
+
+/// Идентификатор именованного сообщения (одинаков во всех процессах сессии).
+fn show_message_id() -> u32 {
+    static MESSAGE: OnceLock<u32> = OnceLock::new();
+    *MESSAGE.get_or_init(|| {
+        let name: Vec<u16> = "Klavium.ShowSettings\0".encode_utf16().collect();
+        unsafe { RegisterWindowMessageW(name.as_ptr()) }
+    })
+}
+
+/// Колбэк, вызываемый окном-приёмником по сигналу «показать настройки».
+static SHOW_CALLBACK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+
+unsafe extern "system" fn control_wnd_proc(
+    window: HWND,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+) -> isize {
+    if message == show_message_id() {
+        if let Some(callback) = SHOW_CALLBACK.get() {
+            callback();
+        }
+        return 0;
+    }
+    unsafe { DefWindowProcW(window, message, wparam, lparam) }
+}
+
+/// Завести скрытое окно-приёмник в текущем потоке (нужен поток с насосом
+/// сообщений — у Klavium это поток трея) и повесить на него колбэк показа.
 ///
-/// Нужно потоку-наблюдателю трея: когда окно скрыто, цикл eframe спит и его
-/// нужно «разбудить» внешним показом окна.
+/// Так повторный запуск приложения просит работающий экземпляр показать окно
+/// **его собственными средствами**: внешний `ShowWindow` ломает цикл winit на
+/// Windows (окно зависает чёрным и крутит CPU на 100%).
+pub fn install_show_control(on_show: impl Fn() + Send + Sync + 'static) -> bool {
+    let class: Vec<u16> = CONTROL_CLASS
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    unsafe {
+        let mut window_class: WNDCLASSW = std::mem::zeroed();
+        window_class.lpfnWndProc = Some(control_wnd_proc);
+        window_class.hInstance = instance;
+        window_class.lpszClassName = class.as_ptr();
+        // Повторная регистрация класса в том же процессе безвредна.
+        RegisterClassW(&window_class);
+
+        // HWND_MESSAGE (-3): «окно только для сообщений» — невидимо и вне Z-порядка.
+        let message_only: HWND = -3_isize as HWND;
+        let window = CreateWindowExW(
+            0,
+            class.as_ptr(),
+            class.as_ptr(),
+            0,
+            0,
+            0,
+            0,
+            0,
+            message_only,
+            std::ptr::null_mut(),
+            instance,
+            std::ptr::null(),
+        );
+        if window.is_null() {
+            return false;
+        }
+    }
+    let _ = SHOW_CALLBACK.set(Box::new(on_show));
+    true
+}
+
+/// Попросить работающий экземпляр показать окно настроек (повторный запуск).
 #[must_use]
-pub fn show_settings_window() -> bool {
-    let title: Vec<u16> = "Klavium — настройки\0".encode_utf16().collect();
-    let window = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
+pub fn request_show_settings() -> bool {
+    let class: Vec<u16> = CONTROL_CLASS
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let window = unsafe { FindWindowW(class.as_ptr(), std::ptr::null()) };
     if window.is_null() {
         return false;
     }
-    unsafe {
-        let _ = ShowWindow(window, SW_SHOW);
-        let _ = SetForegroundWindow(window);
-    }
-    true
+    let posted = unsafe { PostMessageW(window, show_message_id(), 0, 0) };
+    posted != 0
 }
 
 /// Обработать сообщения текущего потока (ждать до 100 мс).
@@ -253,5 +330,34 @@ pub fn pump_thread_messages() {
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
+    }
+}
+
+unsafe extern "system" fn hide_settings_cb(window: HWND, _param: LPARAM) -> i32 {
+    let mut pid = 0_u32;
+    unsafe {
+        GetWindowThreadProcessId(window, &mut pid);
+    }
+    if pid != unsafe { GetCurrentProcessId() } {
+        return 1;
+    }
+    let class = window_class(window);
+    let title = window_title(window);
+    if class == "Window Class" && title.starts_with("Klavium — настройки") {
+        unsafe {
+            let _ = ShowWindow(window, SW_HIDE);
+        }
+    }
+    1 // продолжаем перечисление
+}
+
+/// Скрыть окна настроек, оставшиеся после закрытия окна eframe.
+///
+/// eframe в режиме `run_and_return` освобождает окно только при следующем
+/// запуске цикла — до этого оно остаётся видимым «зомби», поэтому прячем сами.
+/// Вызывать из того же потока, что создавал окно (главный поток).
+pub fn hide_settings_windows() {
+    unsafe {
+        let _ = EnumWindows(Some(hide_settings_cb), 0);
     }
 }
