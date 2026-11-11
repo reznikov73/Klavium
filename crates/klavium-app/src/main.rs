@@ -92,6 +92,9 @@ fn main() -> anyhow::Result<()> {
     let shared: SharedConfig = Arc::new(RwLock::new(config.clone()));
     // Разобранные хоткеи: хук читает готовые сочетания, без разбора строк.
     let compiled_hotkeys = Arc::new(RwLock::new(CompiledHotkeys::from_config(&config)));
+    // Нажатия для назначения хоткея ловит хук: окно не получает Pause и др.
+    let capture_queue: settings::CaptureQueue =
+        Arc::new(Mutex::new(std::collections::VecDeque::new()));
 
     // Сервисы: статистика, звук
     let stats_service = Arc::new(stats::StatsService::new(paths.stats_path()));
@@ -157,6 +160,7 @@ fn main() -> anyhow::Result<()> {
         Arc::clone(&overlay),
         Arc::clone(&voice_service),
         Arc::clone(&compiled_hotkeys),
+        Arc::clone(&capture_queue),
     )?;
 
     // Общие объекты окна настроек: живут всё время работы приложения и
@@ -176,6 +180,7 @@ fn main() -> anyhow::Result<()> {
         config_path: paths.config_path,
         tray_queue: Arc::clone(&tray_queue),
         hotkeys: compiled_hotkeys,
+        capture_queue,
     };
     drop(ui_tx); // единственные отправители остаются в потоке трея
 
@@ -212,6 +217,7 @@ struct UiRuntime {
     config_path: PathBuf,
     tray_queue: tray::TrayQueue,
     hotkeys: Arc<RwLock<CompiledHotkeys>>,
+    capture_queue: settings::CaptureQueue,
 }
 
 /// Цикл «открыть/закрыть окно настроек» до завершения приложения.
@@ -238,6 +244,7 @@ fn run_ui_loop(runtime: &UiRuntime, ui_rx: &mpsc::Receiver<()>, mut open_now: bo
                 data_note: runtime.data_note.clone(),
                 tray_queue: Arc::clone(&runtime.tray_queue),
                 hotkeys: Arc::clone(&runtime.hotkeys),
+                capture_queue: Arc::clone(&runtime.capture_queue),
             });
             UI_OPEN.store(false, Ordering::SeqCst);
             window::hide_settings_windows();
@@ -273,6 +280,7 @@ struct UiContext {
     data_note: Option<String>,
     tray_queue: tray::TrayQueue,
     hotkeys: Arc<RwLock<CompiledHotkeys>>,
+    capture_queue: settings::CaptureQueue,
 }
 
 /// Асинхронный перенос каталога данных (кнопки в «Общих»).
@@ -382,6 +390,7 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
         vosk_install_start: Box::new(move || vosk_install_start.start()),
         vosk_state: Box::new(move || vosk_install_state.status()),
         capture_active: Box::new(|active: bool| CAPTURING.store(active, Ordering::Relaxed)),
+        capture_queue: ui.capture_queue,
         open_on_start: true,
         smoke_seconds: std::env::var("KLAVIUM_APP_SMOKE")
             .ok()
@@ -400,12 +409,27 @@ fn install_hook(
     overlay: Arc<overlay::OverlayHandle>,
     voice: Arc<voice::VoiceService>,
     compiled: Arc<RwLock<CompiledHotkeys>>,
+    capture_queue: settings::CaptureQueue,
 ) -> anyhow::Result<hook::KeyboardHook> {
     hook::install(move |event| {
         if event.extra_info == hook::INJECT_EXTRA_INFO || !event.is_down {
             return hook::HookDecision::Propagate;
         }
         if CAPTURING.load(Ordering::Relaxed) {
+            // Назначение хоткея: отдаём нажатие окну и запоминаем для него.
+            // Сами модификаторы пропускаем — назначается клавиша с ними.
+            if !is_modifier_vk(event.vk_code) {
+                let mods = real_io::current_modifiers();
+                if let Ok(mut queue) = capture_queue.lock() {
+                    if queue.len() < 8 {
+                        queue.push_back(settings::CapturedKey {
+                            vk_code: event.vk_code,
+                            scan_code: event.scan_code,
+                            mods,
+                        });
+                    }
+                }
+            }
             return hook::HookDecision::Propagate;
         }
 
@@ -467,6 +491,14 @@ fn install_hook(
             hook::HookDecision::Propagate
         }
     })
+}
+
+/// Модификатор: его нажатие не назначаем (клавиша назначается вместе с ним).
+const fn is_modifier_vk(vk: u32) -> bool {
+    matches!(
+        vk,
+        0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5
+    )
 }
 
 /// Дымовой режим: автоматически включить диктовку (`KLAVIUM_APP_VOICE=1`)

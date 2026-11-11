@@ -4,8 +4,9 @@
 //! в трее). Изменения применяются кнопкой «Сохранить» через колбэк приложения
 //! (запись конфига, обновление движка, автозапуск).
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText};
@@ -16,6 +17,20 @@ use klavium_core::voice::{DownloadStatus, RecognitionTest, MODELS};
 
 /// Колбэк сохранения: приложение пишет файл и применяет изменения на лету.
 pub type SaveHandler = Box<dyn Fn(AppConfig) -> Result<(), String> + 'static>;
+
+/// Нажатие, пойманное глобальным хуком во время назначения хоткея.
+#[derive(Debug, Clone, Copy)]
+pub struct CapturedKey {
+    /// Виртуальный код клавиши.
+    pub vk_code: u32,
+    /// Скан-код клавиши.
+    pub scan_code: u32,
+    /// Зажатые модификаторы.
+    pub mods: klavium_core::hotkeys::Mods,
+}
+
+/// Очередь нажатий для захвата: наполняет приложение из хука, читает окно.
+pub type CaptureQueue = Arc<Mutex<VecDeque<CapturedKey>>>;
 
 /// Контекст запуска окна настроек.
 pub struct SettingsContext {
@@ -54,6 +69,8 @@ pub struct SettingsContext {
     /// Сообщить приложению о захвате клавиши: глобальный хук на это время
     /// клавиши не перехватывает, иначе окно не получит нажатие.
     pub capture_active: Box<dyn Fn(bool) + 'static>,
+    /// Очередь нажатий от хука (работает и для Pause/PrintScreen/ScrollLock).
+    pub capture_queue: CaptureQueue,
     /// Запустить тест распознавания.
     pub voice_test_start: Box<dyn Fn() + 'static>,
     /// Остановить тест распознавания.
@@ -160,6 +177,8 @@ struct SettingsApp {
     vosk_install_start: Box<dyn Fn() + 'static>,
     vosk_state: Box<dyn Fn() -> DownloadStatus + 'static>,
     capture_active: Box<dyn Fn(bool) + 'static>,
+    capture_queue: CaptureQueue,
+    capture_since: Option<Instant>,
     voice_test_start: Box<dyn Fn() + 'static>,
     voice_test_stop: Box<dyn Fn() + 'static>,
     voice_test_state: Box<dyn Fn() -> RecognitionTest + 'static>,
@@ -192,6 +211,8 @@ impl SettingsApp {
             vosk_install_start: context.vosk_install_start,
             vosk_state: context.vosk_state,
             capture_active: context.capture_active,
+            capture_queue: context.capture_queue,
+            capture_since: None,
             voice_test_start: context.voice_test_start,
             voice_test_stop: context.voice_test_stop,
             voice_test_state: context.voice_test_state,
@@ -215,13 +236,21 @@ impl SettingsApp {
 
     /// Начать захват клавиши: глобальный хук на это время её не перехватывает.
     fn begin_capture(&mut self, field: HotkeyField) {
+        if let Ok(mut queue) = self.capture_queue.lock() {
+            queue.clear();
+        }
         self.capture = Some(field);
+        self.capture_since = Some(Instant::now());
         (self.capture_active)(true);
     }
 
     /// Прекратить захват клавиши.
     fn cancel_capture(&mut self) {
         self.capture = None;
+        self.capture_since = None;
+        if let Ok(mut queue) = self.capture_queue.lock() {
+            queue.clear();
+        }
         (self.capture_active)(false);
     }
 
@@ -356,8 +385,8 @@ impl SettingsApp {
         ui.add_space(4.0);
         ui.label(
             RichText::new(
-                "Нажмите кнопку с текущим сочетанием и введите новое. Esc отменяет ввод; \
-                 сочетания с Win и клавиши Pause, PrintScreen, ScrollLock вводятся вручную внизу.",
+                "Нажмите кнопку с текущим сочетанием и введите новое — хук поймает любую \
+                 клавишу, включая Pause и PrintScreen. Esc отменяет ввод.",
             )
             .small()
             .weak(),
@@ -365,6 +394,7 @@ impl SettingsApp {
         ui.add_space(10.0);
 
         let mut start_capture = None;
+        let mut stop_capture = false;
         for field in HotkeyField::ALL {
             let spec = field.spec(&self.config).to_string();
             let capturing = self.capture == Some(field);
@@ -391,31 +421,7 @@ impl SettingsApp {
                 }
             });
 
-            if capturing {
-                ui.colored_label(Color32::from_rgb(87, 200, 120), "● ждём нажатия клавиши…");
-            } else if spec.trim().is_empty() {
-                ui.label(
-                    RichText::new("не задано — действие доступно из меню трея")
-                        .small()
-                        .weak(),
-                );
-            } else {
-                match Hotkey::parse(&spec) {
-                    Err(error) => {
-                        ui.colored_label(
-                            Color32::from_rgb(235, 87, 87),
-                            format!("Сочетание не разобрано: {error}"),
-                        );
-                    }
-                    Ok(hotkey) if hotkey.is_risky() => {
-                        ui.colored_label(
-                            Color32::from_rgb(230, 180, 80),
-                            "Без модификаторов: сочетание будет перехватывать обычный набор.",
-                        );
-                    }
-                    Ok(_) => {}
-                }
-            }
+            draw_hotkey_state(ui, spec.as_str(), capturing, &mut stop_capture);
 
             ui.label(RichText::new(field.hint()).small().weak());
             ui.add_space(10.0);
@@ -432,6 +438,9 @@ impl SettingsApp {
             ui.add_space(6.0);
         }
 
+        if stop_capture {
+            self.cancel_capture();
+        }
         if let Some(field) = start_capture {
             self.begin_capture(field);
         }
@@ -459,38 +468,48 @@ impl SettingsApp {
     }
 
     /// Поймать следующее нажатие для выбранного действия.
+    ///
+    /// Нажатия приходят из глобального хука ([`CaptureQueue`]), а не из egui:
+    /// окно не получает `Pause`, `PrintScreen`, `ScrollLock`.
     fn handle_capture(&mut self, ctx: &egui::Context) {
         let Some(field) = self.capture else {
             return;
         };
-        let pressed = ctx.input(|input| {
-            input.events.iter().find_map(|event| match event {
-                egui::Event::Key {
-                    key,
-                    pressed: true,
-                    repeat: false,
-                    modifiers,
-                    ..
-                } => Some((*key, *modifiers)),
-                _ => None,
-            })
-        });
-        let Some((key, modifiers)) = pressed else {
-            ctx.request_repaint();
-            return;
-        };
-        if key == egui::Key::Escape && modifiers.is_none() {
+        if self
+            .capture_since
+            .is_some_and(|since| since.elapsed() > Duration::from_secs(10))
+        {
+            self.status = Some((
+                "Время ожидания истекло — нажмите «Изменить» ещё раз".to_string(),
+                false,
+            ));
             self.cancel_capture();
             return;
         }
-        match hotkey_from_egui(key, modifiers) {
-            Ok(spec) => {
-                *field.spec_mut(&mut self.config) = spec;
+        let pressed = self
+            .capture_queue
+            .lock()
+            .ok()
+            .and_then(|mut queue| queue.pop_front());
+        let Some(key) = pressed else {
+            ctx.request_repaint();
+            return;
+        };
+        if key.vk_code == 0x1B && key.mods.is_empty() {
+            self.cancel_capture();
+            return;
+        }
+        match Hotkey::from_key(key.vk_code, key.scan_code, key.mods) {
+            Some(hotkey) => {
+                *field.spec_mut(&mut self.config) = hotkey.to_spec();
+                self.status = Some((format!("Назначено: {hotkey}"), false));
                 self.cancel_capture();
             }
-            Err(message) => {
-                self.status = Some((message, true));
-                self.cancel_capture();
+            None => {
+                self.status = Some((
+                    "Эту клавишу нельзя назначить — нажмите другую".to_string(),
+                    true,
+                ));
             }
         }
     }
@@ -776,6 +795,40 @@ impl SettingsApp {
     }
 }
 
+/// Состояние строки хоткея: ожидание нажатия, ошибка, предупреждение.
+fn draw_hotkey_state(ui: &mut egui::Ui, spec: &str, capturing: bool, stop_capture: &mut bool) {
+    if capturing {
+        ui.horizontal(|ui| {
+            ui.colored_label(Color32::from_rgb(87, 200, 120), "● ждём нажатия клавиши…");
+            if ui.small_button("Отмена").clicked() {
+                *stop_capture = true;
+            }
+        });
+    } else if spec.trim().is_empty() {
+        ui.label(
+            RichText::new("не задано — действие доступно из меню трея")
+                .small()
+                .weak(),
+        );
+    } else {
+        match Hotkey::parse(spec) {
+            Err(error) => {
+                ui.colored_label(
+                    Color32::from_rgb(235, 87, 87),
+                    format!("Сочетание не разобрано: {error}"),
+                );
+            }
+            Ok(hotkey) if hotkey.is_risky() => {
+                ui.colored_label(
+                    Color32::from_rgb(230, 180, 80),
+                    "Без модификаторов: сочетание будет перехватывать обычный набор.",
+                );
+            }
+            Ok(_) => {}
+        }
+    }
+}
+
 /// Действие с настраиваемой горячей клавишей.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum HotkeyField {
@@ -865,43 +918,6 @@ fn hotkey_conflicts(config: &AppConfig) -> Vec<String> {
         }
     }
     conflicts
-}
-
-/// Собрать спецификацию из события egui (клавиша + модификаторы).
-fn hotkey_from_egui(key: egui::Key, modifiers: egui::Modifiers) -> Result<String, String> {
-    let mut spec = String::new();
-    // На Windows `command` — это Ctrl; Win-клавиша в egui не попадает.
-    if modifiers.ctrl || modifiers.command {
-        spec.push_str("Ctrl+");
-    }
-    if modifiers.shift {
-        spec.push_str("Shift+");
-    }
-    if modifiers.alt {
-        spec.push_str("Alt+");
-    }
-    spec.push_str(egui_key_token(key));
-    Hotkey::parse(&spec)
-        .map(Hotkey::to_spec)
-        .map_err(|error| format!("Эту клавишу нельзя назначить: {error}"))
-}
-
-/// Имя клавиши egui в терминах спецификации хоткея.
-fn egui_key_token(key: egui::Key) -> &'static str {
-    match key {
-        egui::Key::Minus => "-",
-        egui::Key::Equals => "=",
-        egui::Key::Comma => ",",
-        egui::Key::Period => ".",
-        egui::Key::Semicolon => ";",
-        egui::Key::Quote => "'",
-        egui::Key::Backtick => "`",
-        egui::Key::Slash => "/",
-        egui::Key::Backslash => "\\",
-        egui::Key::OpenBracket => "[",
-        egui::Key::CloseBracket => "]",
-        other => other.name(),
-    }
 }
 
 /// Тумблер вкл/выкл в стиле переключателя (зелёный = включено).

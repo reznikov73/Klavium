@@ -187,6 +187,32 @@ impl NamedKey {
             _ => return None,
         })
     }
+
+    /// Именованная клавиша по виртуальному коду (если это она).
+    #[must_use]
+    pub const fn from_vk(vk: u32) -> Option<Self> {
+        Some(match vk {
+            0x20 => Self::Space,
+            0x0D => Self::Enter,
+            0x09 => Self::Tab,
+            0x1B => Self::Escape,
+            0x08 => Self::Backspace,
+            0x2D => Self::Insert,
+            0x2E => Self::Delete,
+            0x24 => Self::Home,
+            0x23 => Self::End,
+            0x21 => Self::PageUp,
+            0x22 => Self::PageDown,
+            0x25 => Self::Left,
+            0x27 => Self::Right,
+            0x26 => Self::Up,
+            0x28 => Self::Down,
+            0x13 => Self::Pause,
+            0x91 => Self::ScrollLock,
+            0x2C => Self::PrintScreen,
+            _ => return None,
+        })
+    }
 }
 
 /// Клавиша-триггер хоткея.
@@ -259,6 +285,23 @@ impl Hotkey {
     #[must_use]
     pub fn matches(self, vk_code: u32, scan_code: u32, mods: Mods) -> bool {
         self.mods == mods && self.trigger.matches(vk_code, scan_code)
+    }
+
+    /// Хоткей из события клавиши — для назначения нажатием.
+    ///
+    /// Возвращает `None`, если клавишу нельзя назначить (модификатор или
+    /// неизвестный код). Работает и для клавиш, которых нет в окне: `Pause`,
+    /// `PrintScreen`, `ScrollLock`.
+    #[must_use]
+    pub fn from_key(vk_code: u32, scan_code: u32, mods: Mods) -> Option<Self> {
+        let trigger = if (VK_F1..VK_F1 + u32::from(MAX_FUNCTION_KEY)).contains(&vk_code) {
+            Trigger::Function((vk_code - VK_F1 + 1) as u8)
+        } else if let Some(key) = NamedKey::from_vk(vk_code) {
+            Trigger::Named(key)
+        } else {
+            Trigger::Char(keys::qwerty_char(scan_code)?)
+        };
+        Some(Self { trigger, mods })
     }
 
     /// Клавиша-триггер.
@@ -520,6 +563,22 @@ mod tests {
         assert!(parse("PrintScreen").matches(0x2C, 0x37, Mods::none()));
         assert!(parse("ScrollLock").matches(0x91, 0x46, Mods::none()));
         assert_eq!(parse("Break").to_spec(), "Pause");
+    }
+
+    #[test]
+    fn test_from_key_for_capture() {
+        let ctrl = Mods {
+            ctrl: true,
+            ..Mods::none()
+        };
+        assert_eq!(
+            Hotkey::from_key(0x13, 0x45, ctrl),
+            Some(parse("Ctrl+Pause"))
+        );
+        assert_eq!(Hotkey::from_key(0x7A, 0x57, ctrl), Some(parse("Ctrl+F11")));
+        assert_eq!(Hotkey::from_key(0x1E, 0x1E, Mods::none()), Some(parse("A")));
+        // Модификатор назначить нельзя.
+        assert_eq!(Hotkey::from_key(0x11, 0x1D, ctrl), None);
     }
 
     #[test]
