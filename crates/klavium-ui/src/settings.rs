@@ -51,6 +51,9 @@ pub struct SettingsContext {
     pub vosk_install_start: Box<dyn Fn() + 'static>,
     /// Снимок состояния установки Vosk.
     pub vosk_state: Box<dyn Fn() -> DownloadStatus + 'static>,
+    /// Сообщить приложению о захвате клавиши: глобальный хук на это время
+    /// клавиши не перехватывает, иначе окно не получит нажатие.
+    pub capture_active: Box<dyn Fn(bool) + 'static>,
     /// Запустить тест распознавания.
     pub voice_test_start: Box<dyn Fn() + 'static>,
     /// Остановить тест распознавания.
@@ -156,6 +159,7 @@ struct SettingsApp {
     model_download_state: Box<dyn Fn() -> DownloadStatus + 'static>,
     vosk_install_start: Box<dyn Fn() + 'static>,
     vosk_state: Box<dyn Fn() -> DownloadStatus + 'static>,
+    capture_active: Box<dyn Fn(bool) + 'static>,
     voice_test_start: Box<dyn Fn() + 'static>,
     voice_test_stop: Box<dyn Fn() + 'static>,
     voice_test_state: Box<dyn Fn() -> RecognitionTest + 'static>,
@@ -187,6 +191,7 @@ impl SettingsApp {
             model_download_state: context.model_download_state,
             vosk_install_start: context.vosk_install_start,
             vosk_state: context.vosk_state,
+            capture_active: context.capture_active,
             voice_test_start: context.voice_test_start,
             voice_test_stop: context.voice_test_stop,
             voice_test_state: context.voice_test_state,
@@ -196,7 +201,7 @@ impl SettingsApp {
     }
 
     fn save(&mut self) {
-        self.capture = None;
+        self.cancel_capture();
         match (self.on_save)(self.config.clone()) {
             Ok(()) => {
                 self.original = self.config.clone();
@@ -206,6 +211,18 @@ impl SettingsApp {
                 self.status = Some((format!("Ошибка: {error}"), true));
             }
         }
+    }
+
+    /// Начать захват клавиши: глобальный хук на это время её не перехватывает.
+    fn begin_capture(&mut self, field: HotkeyField) {
+        self.capture = Some(field);
+        (self.capture_active)(true);
+    }
+
+    /// Прекратить захват клавиши.
+    fn cancel_capture(&mut self) {
+        self.capture = None;
+        (self.capture_active)(false);
     }
 
     fn draw(&mut self, ctx: &egui::Context) {
@@ -281,7 +298,7 @@ impl SettingsApp {
                 // Захват клавиши живёт только в своей секции: иначе следующее
                 // нажатие в другом разделе молча переназначит хоткей.
                 if self.section != Section::Hotkeys {
-                    self.capture = None;
+                    self.cancel_capture();
                 }
                 match self.section {
                     Section::Correction => self.draw_correction(ui),
@@ -340,7 +357,7 @@ impl SettingsApp {
         ui.label(
             RichText::new(
                 "Нажмите кнопку с текущим сочетанием и введите новое. Esc отменяет ввод; \
-                 сочетания с Win и нестандартные клавиши вводятся вручную внизу.",
+                 сочетания с Win и клавиши Pause, PrintScreen, ScrollLock вводятся вручную внизу.",
             )
             .small()
             .weak(),
@@ -366,11 +383,11 @@ impl SettingsApp {
                 }
                 if ui.small_button("Очистить").clicked() {
                     field.spec_mut(&mut self.config).clear();
-                    self.capture = None;
+                    self.cancel_capture();
                 }
                 if ui.small_button("По умолчанию").clicked() {
                     *field.spec_mut(&mut self.config) = field.default_spec().to_string();
-                    self.capture = None;
+                    self.cancel_capture();
                 }
             });
 
@@ -416,7 +433,7 @@ impl SettingsApp {
         }
 
         if let Some(field) = start_capture {
-            self.capture = Some(field);
+            self.begin_capture(field);
         }
         self.handle_capture(ctx);
 
@@ -463,17 +480,17 @@ impl SettingsApp {
             return;
         };
         if key == egui::Key::Escape && modifiers.is_none() {
-            self.capture = None;
+            self.cancel_capture();
             return;
         }
         match hotkey_from_egui(key, modifiers) {
             Ok(spec) => {
                 *field.spec_mut(&mut self.config) = spec;
-                self.capture = None;
+                self.cancel_capture();
             }
             Err(message) => {
                 self.status = Some((message, true));
-                self.capture = None;
+                self.cancel_capture();
             }
         }
     }
@@ -950,6 +967,13 @@ impl eframe::App for SettingsApp {
         ctx.request_repaint_after(Duration::from_millis(200));
 
         self.draw(ctx);
+    }
+}
+
+impl Drop for SettingsApp {
+    fn drop(&mut self) {
+        // Окно закрыли во время захвата — вернуть хуку обычный режим.
+        (self.capture_active)(false);
     }
 }
 

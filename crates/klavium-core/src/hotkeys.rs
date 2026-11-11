@@ -98,6 +98,12 @@ pub enum NamedKey {
     Up,
     /// Стрелка вниз.
     Down,
+    /// Pause / Break.
+    Pause,
+    /// Scroll Lock.
+    ScrollLock,
+    /// Print Screen.
+    PrintScreen,
 }
 
 impl NamedKey {
@@ -120,6 +126,9 @@ impl NamedKey {
             Self::Right => 0x27,
             Self::Up => 0x26,
             Self::Down => 0x28,
+            Self::Pause => 0x13,
+            Self::ScrollLock => 0x91,
+            Self::PrintScreen => 0x2C,
         }
     }
 
@@ -142,6 +151,9 @@ impl NamedKey {
             Self::Right => "Right",
             Self::Up => "Up",
             Self::Down => "Down",
+            Self::Pause => "Pause",
+            Self::ScrollLock => "ScrollLock",
+            Self::PrintScreen => "PrintScreen",
         }
     }
 
@@ -169,6 +181,9 @@ impl NamedKey {
             "right" | "arrowright" => Self::Right,
             "up" | "arrowup" => Self::Up,
             "down" | "arrowdown" => Self::Down,
+            "pause" | "break" => Self::Pause,
+            "scrolllock" | "scroll" => Self::ScrollLock,
+            "printscreen" | "prtsc" | "print" => Self::PrintScreen,
             _ => return None,
         })
     }
@@ -285,7 +300,10 @@ impl Hotkey {
                 | NamedKey::Left
                 | NamedKey::Right
                 | NamedKey::Up
-                | NamedKey::Down,
+                | NamedKey::Down
+                | NamedKey::Pause
+                | NamedKey::ScrollLock
+                | NamedKey::PrintScreen,
             ) => false,
             Trigger::Named(_) | Trigger::Char(_) => true,
         }
@@ -485,6 +503,23 @@ mod tests {
     #[test]
     fn test_cyrillic_uppercase_normalized() {
         assert_eq!(parse("Ы"), parse("S"));
+    }
+
+    #[test]
+    fn test_pause_and_system_keys() {
+        assert!(parse("Pause").matches(0x13, 0x45, Mods::none()));
+        assert!(parse("Break").matches(0x13, 0x45, Mods::none()));
+        assert!(parse("Ctrl+Pause").matches(
+            0x13,
+            0x45,
+            Mods {
+                ctrl: true,
+                ..Mods::none()
+            }
+        ));
+        assert!(parse("PrintScreen").matches(0x2C, 0x37, Mods::none()));
+        assert!(parse("ScrollLock").matches(0x91, 0x46, Mods::none()));
+        assert_eq!(parse("Break").to_spec(), "Pause");
     }
 
     #[test]

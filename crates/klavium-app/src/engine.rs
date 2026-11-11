@@ -1270,6 +1270,26 @@ mod tests {
     }
 
     #[test]
+    fn test_ctrl_f11_hotkey_triggers_apply() {
+        let (engine, io, _events) = make_engine();
+        engine.update_config(EngineConfig {
+            hotkey_correct: klavium_core::hotkeys::Hotkey::parse("Ctrl+F11").ok(),
+            run_jobs_inline: true,
+            ..EngineConfig::default()
+        });
+        press_str(&engine, "ghbdtn ");
+        io.0.lock().unwrap().modifiers = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        assert!(
+            press_vk(&engine, 0x7A, 0x57),
+            "Ctrl+F11 должен распознаваться как хоткей"
+        );
+        assert!(io.ops().contains(&Op::Backspaces(7)));
+    }
+
+    #[test]
     fn test_batch_correction_two_errors() {
         let (engine, io, events) = make_engine();
         press_str(&engine, "ghbdtn ");

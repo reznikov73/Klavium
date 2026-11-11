@@ -48,6 +48,18 @@ fn log_startup(paths: &config_io::DataPaths) {
     }
 }
 
+/// Журнал: действующие горячие клавиши (помогает при разборе жалоб).
+fn log_hotkeys(config: &AppConfig) {
+    tracing::info!(
+        target: "klavium",
+        "хоткеи: исправление={}, подсказка={}, голос={}, выход={}",
+        config.hotkeys.correction_apply,
+        config.hotkeys.card_hide,
+        config.hotkeys.voice_toggle,
+        config.hotkeys.quit
+    );
+}
+
 /// Открыто ли окно настроек прямо сейчас (главный поток внутри eframe).
 static UI_OPEN: AtomicBool = AtomicBool::new(false);
 
@@ -73,6 +85,7 @@ fn main() -> anyhow::Result<()> {
     }
     logging::init(&config, &paths.logs_dir())?;
     log_startup(&paths);
+    log_hotkeys(&config);
 
     sync_autostart(&config);
 
@@ -368,6 +381,7 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
         model_download_state: Box::new(move || downloads_state.status()),
         vosk_install_start: Box::new(move || vosk_install_start.start()),
         vosk_state: Box::new(move || vosk_install_state.status()),
+        capture_active: Box::new(|active: bool| CAPTURING.store(active, Ordering::Relaxed)),
         open_on_start: true,
         smoke_seconds: std::env::var("KLAVIUM_APP_SMOKE")
             .ok()
@@ -375,6 +389,10 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
     };
     settings::run(settings_context)
 }
+
+/// Идёт назначение хоткея в настройках: клавиши не перехватываем,
+/// иначе окно не получит нажатие и назначить сочетание будет невозможно.
+static CAPTURING: AtomicBool = AtomicBool::new(false);
 
 /// Установить клавиатурный хук: выход, скрытие карточки, голосовой ввод, движок.
 fn install_hook(
@@ -387,9 +405,7 @@ fn install_hook(
         if event.extra_info == hook::INJECT_EXTRA_INFO || !event.is_down {
             return hook::HookDecision::Propagate;
         }
-        // Своё окно не перехватываем: иначе нельзя ни печатать в полях
-        // настроек, ни назначить хоткей нажатием клавиши.
-        if window::is_own_foreground() {
+        if CAPTURING.load(Ordering::Relaxed) {
             return hook::HookDecision::Propagate;
         }
 
@@ -402,6 +418,7 @@ fn install_hook(
             .quit
             .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
         {
+            tracing::info!(target: "klavium", "хоткей: выход");
             std::process::exit(0);
         }
 
@@ -421,8 +438,26 @@ fn install_hook(
                 .voice_toggle
                 .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
         {
+            tracing::debug!(target: "klavium", "хоткей: голосовой ввод");
             voice.toggle();
             return hook::HookDecision::Suppress;
+        }
+
+        // Хоткей исправления обрабатываем и в своём окне: сразу после
+        // назначения его естественно проверить в настройках.
+        if hotkeys
+            .correction_apply
+            .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
+            && engine.pending_errors_count() > 0
+        {
+            tracing::debug!(target: "klavium", "хоткей: применить исправление");
+            engine.request_apply();
+            return hook::HookDecision::Suppress;
+        }
+
+        // Дальше — только движок: свои поля настроек не корректируем.
+        if window::is_own_foreground() {
+            return hook::HookDecision::Propagate;
         }
 
         let key = KeyInput::from_hook(&event);
