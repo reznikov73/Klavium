@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText};
 use klavium_core::config::{AppConfig, SoundSpec};
+use klavium_core::hotkeys::Hotkey;
 use klavium_core::stats::StatsData;
 use klavium_core::voice::{DownloadStatus, RecognitionTest, MODELS};
 
@@ -99,6 +100,7 @@ pub fn run(context: SettingsContext) -> anyhow::Result<()> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Section {
     Correction,
+    Hotkeys,
     Sounds,
     Timeouts,
     Notifications,
@@ -107,8 +109,9 @@ enum Section {
     Voice,
 }
 
-const SECTIONS: [(Section, &str); 7] = [
+const SECTIONS: [(Section, &str); 8] = [
     (Section::Correction, "Коррекция"),
+    (Section::Hotkeys, "Горячие клавиши"),
     (Section::Sounds, "Звуки"),
     (Section::Timeouts, "Таймауты"),
     (Section::Notifications, "Уведомления"),
@@ -121,6 +124,7 @@ const SECTIONS: [(Section, &str); 7] = [
 fn initial_section() -> Section {
     match std::env::var("KLAVIUM_APP_SETTINGS_PAGE").as_deref() {
         Ok("sounds") => Section::Sounds,
+        Ok("hotkeys") => Section::Hotkeys,
         Ok("timeouts") => Section::Timeouts,
         Ok("notifications") => Section::Notifications,
         Ok("statistics") => Section::Statistics,
@@ -134,6 +138,8 @@ struct SettingsApp {
     config: AppConfig,
     original: AppConfig,
     section: Section,
+    /// Действие, для которого сейчас ждём нажатие сочетания.
+    capture: Option<HotkeyField>,
     status: Option<(String, bool)>,
     on_save: SaveHandler,
     sound_preview: Box<dyn Fn(SoundSpec) + 'static>,
@@ -164,6 +170,7 @@ impl SettingsApp {
             original: context.config.clone(),
             config: context.config,
             section: initial_section(),
+            capture: None,
             status: None,
             on_save: context.on_save,
             sound_preview: context.sound_preview,
@@ -189,6 +196,7 @@ impl SettingsApp {
     }
 
     fn save(&mut self) {
+        self.capture = None;
         match (self.on_save)(self.config.clone()) {
             Ok(()) => {
                 self.original = self.config.clone();
@@ -255,9 +263,12 @@ impl SettingsApp {
                         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                     }
                     ui.label(
-                        RichText::new("Выход: трей → «Выход» или Ctrl+Shift+Q")
-                            .small()
-                            .weak(),
+                        RichText::new(format!(
+                            "Выход: трей → «Выход» или {}",
+                            hotkey_label(&self.config.hotkeys.quit)
+                        ))
+                        .small()
+                        .weak(),
                     );
                 });
             });
@@ -267,8 +278,14 @@ impl SettingsApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add_space(4.0);
+                // Захват клавиши живёт только в своей секции: иначе следующее
+                // нажатие в другом разделе молча переназначит хоткей.
+                if self.section != Section::Hotkeys {
+                    self.capture = None;
+                }
                 match self.section {
                     Section::Correction => self.draw_correction(ui),
+                    Section::Hotkeys => self.draw_hotkeys(ui, ctx),
                     Section::Sounds => self.draw_sounds(ui),
                     Section::Timeouts => self.draw_timeouts(ui),
                     Section::Notifications => self.draw_notifications(ui),
@@ -281,6 +298,8 @@ impl SettingsApp {
     }
 
     fn draw_correction(&mut self, ui: &mut egui::Ui) {
+        let apply = hotkey_label(&self.config.hotkeys.correction_apply);
+        let hide = hotkey_label(&self.config.hotkeys.card_hide);
         ui.heading("Коррекция раскладки");
         ui.add_space(6.0);
         let correction = &mut self.config.correction;
@@ -303,19 +322,160 @@ impl SettingsApp {
             );
             ui.label(format!("{:.0}%", correction.threshold * 100.0));
         });
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label("Хоткей исправления:");
-            ui.text_edit_singleline(&mut correction.hotkey_correct);
-        });
-        ui.add_space(12.0);
+        ui.add_space(10.0);
+        ui.label(
+            RichText::new(format!(
+                "Применить исправление — {apply}, скрыть подсказку — {hide}. \
+                 Клавиши меняются в разделе «Горячие клавиши»."
+            ))
+            .small()
+            .weak(),
+        );
+    }
+
+    /// Секция «Горячие клавиши»: назначение по нажатию, проверка и конфликты.
+    fn draw_hotkeys(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        ui.heading("Горячие клавиши");
+        ui.add_space(4.0);
         ui.label(
             RichText::new(
-                "Подсказка появляется при уверенности выше порога; F8 применяет, Esc скрывает.",
+                "Нажмите кнопку с текущим сочетанием и введите новое. Esc отменяет ввод; \
+                 сочетания с Win и нестандартные клавиши вводятся вручную внизу.",
             )
             .small()
             .weak(),
         );
+        ui.add_space(10.0);
+
+        let mut start_capture = None;
+        for field in HotkeyField::ALL {
+            let spec = field.spec(&self.config).to_string();
+            let capturing = self.capture == Some(field);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(field.title()).strong());
+                let label = if capturing {
+                    "Нажмите сочетание…".to_string()
+                } else {
+                    hotkey_label(spec.as_str())
+                };
+                if ui
+                    .add_sized([190.0, 24.0], egui::Button::new(label))
+                    .clicked()
+                {
+                    start_capture = Some(field);
+                }
+                if ui.small_button("Очистить").clicked() {
+                    field.spec_mut(&mut self.config).clear();
+                    self.capture = None;
+                }
+                if ui.small_button("По умолчанию").clicked() {
+                    *field.spec_mut(&mut self.config) = field.default_spec().to_string();
+                    self.capture = None;
+                }
+            });
+
+            if capturing {
+                ui.colored_label(Color32::from_rgb(87, 200, 120), "● ждём нажатия клавиши…");
+            } else if spec.trim().is_empty() {
+                ui.label(
+                    RichText::new("не задано — действие доступно из меню трея")
+                        .small()
+                        .weak(),
+                );
+            } else {
+                match Hotkey::parse(&spec) {
+                    Err(error) => {
+                        ui.colored_label(
+                            Color32::from_rgb(235, 87, 87),
+                            format!("Сочетание не разобрано: {error}"),
+                        );
+                    }
+                    Ok(hotkey) if hotkey.is_risky() => {
+                        ui.colored_label(
+                            Color32::from_rgb(230, 180, 80),
+                            "Без модификаторов: сочетание будет перехватывать обычный набор.",
+                        );
+                    }
+                    Ok(_) => {}
+                }
+            }
+
+            ui.label(RichText::new(field.hint()).small().weak());
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(6.0);
+        }
+
+        let conflicts = hotkey_conflicts(&self.config);
+        if !conflicts.is_empty() {
+            ui.colored_label(
+                Color32::from_rgb(235, 87, 87),
+                format!("Одинаковые сочетания: {}", conflicts.join("; ")),
+            );
+            ui.add_space(6.0);
+        }
+
+        if let Some(field) = start_capture {
+            self.capture = Some(field);
+        }
+        self.handle_capture(ctx);
+
+        ui.add_space(4.0);
+        ui.collapsing("Ввести вручную", |ui| {
+            ui.label(
+                RichText::new(
+                    "Формат: Ctrl+Shift+Q, F8, Space, PageUp. Пустое поле — клавиша не назначена.",
+                )
+                .small()
+                .weak(),
+            );
+            for field in HotkeyField::ALL {
+                ui.horizontal(|ui| {
+                    ui.label(field.title());
+                    ui.add(
+                        egui::TextEdit::singleline(field.spec_mut(&mut self.config))
+                            .desired_width(190.0),
+                    );
+                });
+            }
+        });
+    }
+
+    /// Поймать следующее нажатие для выбранного действия.
+    fn handle_capture(&mut self, ctx: &egui::Context) {
+        let Some(field) = self.capture else {
+            return;
+        };
+        let pressed = ctx.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        let Some((key, modifiers)) = pressed else {
+            ctx.request_repaint();
+            return;
+        };
+        if key == egui::Key::Escape && modifiers.is_none() {
+            self.capture = None;
+            return;
+        }
+        match hotkey_from_egui(key, modifiers) {
+            Ok(spec) => {
+                *field.spec_mut(&mut self.config) = spec;
+                self.capture = None;
+            }
+            Err(message) => {
+                self.status = Some((message, true));
+                self.capture = None;
+            }
+        }
     }
 
     fn draw_sounds(&mut self, ui: &mut egui::Ui) {
@@ -508,20 +668,20 @@ impl SettingsApp {
     }
 
     fn draw_voice(&mut self, ui: &mut egui::Ui) {
+        let hotkey = hotkey_label(&self.config.hotkeys.voice_toggle);
         ui.heading("Голосовой ввод");
         ui.add_space(4.0);
         ui.label(
-            RichText::new("Диктовка: F9 — вкл/выкл; движок (Whisper/Google/Vosk) и тест — ниже.")
-                .small()
-                .weak(),
+            RichText::new(format!(
+                "Диктовка: {hotkey} — вкл/выкл; движок (Whisper/Google/Vosk) и тест — ниже. \
+                 Клавиша меняется в разделе «Горячие клавиши»."
+            ))
+            .small()
+            .weak(),
         );
         ui.add_space(8.0);
         let voice = &mut self.config.voice;
         ui.checkbox(&mut voice.enabled, "Включить голосовой ввод");
-        ui.horizontal(|ui| {
-            ui.label("Хоткей:");
-            ui.text_edit_singleline(&mut voice.hotkey);
-        });
         ui.horizontal(|ui| {
             ui.label("Язык:");
             egui::ComboBox::from_id_salt("voice_language")
@@ -574,22 +734,156 @@ impl SettingsApp {
         ui.separator();
         ui.add_space(8.0);
         let (active, status) = (self.voice_snapshot)();
+        let hotkey = self.config.hotkeys.voice_toggle.trim().to_string();
+        let hotkey = if hotkey.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", hotkey_label(&hotkey))
+        };
         ui.horizontal(|ui| {
             if active {
                 ui.colored_label(Color32::from_rgb(87, 200, 120), "● диктовка активна");
             } else {
                 ui.label(RichText::new("○ диктовка выключена").weak());
             }
-            let button = if active {
-                "Выключить (F9)"
+            let action = if active {
+                "Выключить"
             } else {
-                "Включить (F9)"
+                "Включить"
             };
-            if ui.button(button).clicked() {
+            if ui.button(format!("{action}{hotkey}")).clicked() {
                 (self.voice_toggle)();
             }
         });
         ui.label(RichText::new(status).small().weak());
+    }
+}
+
+/// Действие с настраиваемой горячей клавишей.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HotkeyField {
+    CorrectionApply,
+    CardHide,
+    VoiceToggle,
+    Quit,
+}
+
+impl HotkeyField {
+    const ALL: [Self; 4] = [
+        Self::CorrectionApply,
+        Self::CardHide,
+        Self::VoiceToggle,
+        Self::Quit,
+    ];
+
+    const fn title(self) -> &'static str {
+        match self {
+            Self::CorrectionApply => "Применить исправление",
+            Self::CardHide => "Скрыть подсказку",
+            Self::VoiceToggle => "Голосовой ввод",
+            Self::Quit => "Выход из Klavium",
+        }
+    }
+
+    const fn hint(self) -> &'static str {
+        match self {
+            Self::CorrectionApply => "Срабатывает, только когда есть что исправлять.",
+            Self::CardHide => {
+                "Прячет карточку «было → станет»; без подсказки клавиша работает как обычно."
+            }
+            Self::VoiceToggle => "Включает и выключает диктовку (когда голосовой ввод включён).",
+            Self::Quit => "Полностью закрывает программу.",
+        }
+    }
+
+    const fn default_spec(self) -> &'static str {
+        match self {
+            Self::CorrectionApply => "F8",
+            Self::CardHide => "Esc",
+            Self::VoiceToggle => "F9",
+            Self::Quit => "Ctrl+Shift+Q",
+        }
+    }
+
+    const fn spec(self, config: &AppConfig) -> &str {
+        match self {
+            Self::CorrectionApply => config.hotkeys.correction_apply.as_str(),
+            Self::CardHide => config.hotkeys.card_hide.as_str(),
+            Self::VoiceToggle => config.hotkeys.voice_toggle.as_str(),
+            Self::Quit => config.hotkeys.quit.as_str(),
+        }
+    }
+
+    const fn spec_mut(self, config: &mut AppConfig) -> &mut String {
+        match self {
+            Self::CorrectionApply => &mut config.hotkeys.correction_apply,
+            Self::CardHide => &mut config.hotkeys.card_hide,
+            Self::VoiceToggle => &mut config.hotkeys.voice_toggle,
+            Self::Quit => &mut config.hotkeys.quit,
+        }
+    }
+}
+
+/// Подпись сочетания для интерфейса (каноническая запись или «не задано»).
+fn hotkey_label(spec: &str) -> String {
+    let spec = spec.trim();
+    if spec.is_empty() {
+        return "не задано".to_string();
+    }
+    Hotkey::parse(spec).map_or_else(|_| spec.to_string(), Hotkey::to_spec)
+}
+
+/// Пары действий с одинаковым сочетанием — для предупреждения в настройках.
+fn hotkey_conflicts(config: &AppConfig) -> Vec<String> {
+    let mut seen: Vec<(Hotkey, HotkeyField)> = Vec::new();
+    let mut conflicts = Vec::new();
+    for field in HotkeyField::ALL {
+        let Ok(hotkey) = Hotkey::parse(field.spec(config)) else {
+            continue;
+        };
+        if let Some((_, other)) = seen.iter().find(|(existing, _)| *existing == hotkey) {
+            conflicts.push(format!("«{}» и «{}»", other.title(), field.title()));
+        } else {
+            seen.push((hotkey, field));
+        }
+    }
+    conflicts
+}
+
+/// Собрать спецификацию из события egui (клавиша + модификаторы).
+fn hotkey_from_egui(key: egui::Key, modifiers: egui::Modifiers) -> Result<String, String> {
+    let mut spec = String::new();
+    // На Windows `command` — это Ctrl; Win-клавиша в egui не попадает.
+    if modifiers.ctrl || modifiers.command {
+        spec.push_str("Ctrl+");
+    }
+    if modifiers.shift {
+        spec.push_str("Shift+");
+    }
+    if modifiers.alt {
+        spec.push_str("Alt+");
+    }
+    spec.push_str(egui_key_token(key));
+    Hotkey::parse(&spec)
+        .map(Hotkey::to_spec)
+        .map_err(|error| format!("Эту клавишу нельзя назначить: {error}"))
+}
+
+/// Имя клавиши egui в терминах спецификации хоткея.
+fn egui_key_token(key: egui::Key) -> &'static str {
+    match key {
+        egui::Key::Minus => "-",
+        egui::Key::Equals => "=",
+        egui::Key::Comma => ",",
+        egui::Key::Period => ".",
+        egui::Key::Semicolon => ";",
+        egui::Key::Quote => "'",
+        egui::Key::Backtick => "`",
+        egui::Key::Slash => "/",
+        egui::Key::Backslash => "\\",
+        egui::Key::OpenBracket => "[",
+        egui::Key::CloseBracket => "]",
+        other => other.name(),
     }
 }
 

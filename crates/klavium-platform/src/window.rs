@@ -32,6 +32,22 @@ pub fn foreground_window() -> Option<HWND> {
     }
 }
 
+/// Активное окно принадлежит нашему процессу (например, окно настроек).
+///
+/// Хук не перехватывает клавиши в своём окне: иначе нельзя ни печатать
+/// в полях настроек, ни назначить хоткей нажатием клавиши.
+#[must_use]
+pub fn is_own_foreground() -> bool {
+    let Some(window) = foreground_window() else {
+        return false;
+    };
+    let mut pid = 0_u32;
+    unsafe {
+        GetWindowThreadProcessId(window, &mut pid);
+    }
+    pid != 0 && pid == unsafe { GetCurrentProcessId() }
+}
+
 fn read_window_string(
     window: HWND,
     read: unsafe extern "system" fn(HWND, *mut u16, i32) -> i32,

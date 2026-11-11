@@ -1,8 +1,9 @@
 //! klavium-app — библиотека приложения Klavium.
 //!
 //! Содержит конвейер коррекции ([`engine`]), его привязку к Win32
-//! ([`real_io`]) и разбор хоткеев ([`hotkeys`]). Бинарник `klavium`
-//! и демо-пример `hook_demo` используют эти модули.
+//! ([`real_io`]) и разобранные хоткеи ([`hotkeys`]). Разбор спецификаций —
+//! в `klavium_core::hotkeys`. Бинарник `klavium` и демо-пример `hook_demo`
+//! используют эти модули.
 
 pub mod config_io;
 pub mod engine;

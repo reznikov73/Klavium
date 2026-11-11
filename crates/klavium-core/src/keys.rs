@@ -114,6 +114,17 @@ const RU_SHIFT_MAP: &[(char, char)] = &[
     ('\\', '/'),
 ];
 
+/// Кириллические буквы на «особых» клавишах → физическая клавиша QWERTY.
+const RU_LETTER_TO_QWERTY: &[(char, char)] = &[
+    ('ё', '`'),
+    ('х', '['),
+    ('ъ', ']'),
+    ('ж', ';'),
+    ('э', '\''),
+    ('б', ','),
+    ('ю', '.'),
+];
+
 /// QWERTY-символ → кириллица (нижний регистр).
 const QWERTY_TO_CYRILLIC: &[(char, char)] = &[
     ('q', 'й'),
@@ -160,6 +171,13 @@ fn lookup_char(table: &[(char, char)], key: char) -> Option<char> {
         .iter()
         .find(|(k, _)| *k == key)
         .map(|(_, value)| *value)
+}
+
+fn lookup_scan_of(table: &[(u32, char)], target: char) -> Option<u32> {
+    table
+        .iter()
+        .find(|(_, ch)| *ch == target)
+        .map(|(code, _)| *code)
 }
 
 fn upper(c: char) -> char {
@@ -223,6 +241,52 @@ pub fn qwerty_char(scan_code: u32) -> Option<char> {
     lookup_scan(SCANCODE_TO_QWERTY, scan_code).or_else(|| lookup_scan(SCANCODE_TO_CHAR, scan_code))
 }
 
+/// Скан-код клавиши, дающей данный QWERTY-символ (регистр не важен).
+///
+/// Нужен хоткеям: привязка идёт по физической клавише, а не по символу
+/// текущей раскладки.
+#[must_use]
+pub fn scan_code_of(qwerty: char) -> Option<u32> {
+    let lowered = qwerty.to_ascii_lowercase();
+    lookup_scan_of(SCANCODE_TO_QWERTY, lowered)
+        .or_else(|| lookup_scan_of(SCANCODE_TO_CHAR, lowered))
+}
+
+/// Любой символ (латиница, кириллица, пунктуация) → физическая клавиша QWERTY.
+///
+/// Позволяет задавать хоткей в любой раскладке: `Ф` и `A` — одна клавиша.
+#[must_use]
+pub fn to_qwerty(ch: char) -> Option<char> {
+    let lower = ch.to_lowercase().next()?;
+    if lower.is_ascii() {
+        let candidate = lower.to_ascii_lowercase();
+        let printable = matches!(
+            candidate,
+            'a'..='z'
+                | '0'..='9'
+                | '-'
+                | '='
+                | '['
+                | ']'
+                | ';'
+                | '\''
+                | '`'
+                | '\\'
+                | ','
+                | '.'
+                | '/'
+        );
+        return printable.then_some(candidate);
+    }
+    if let Some(qwerty) = lookup_char(RU_LETTER_TO_QWERTY, lower) {
+        return Some(qwerty);
+    }
+    QWERTY_TO_CYRILLIC
+        .iter()
+        .find(|(_, cyrillic)| *cyrillic == lower)
+        .map(|(qwerty, _)| *qwerty)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,6 +342,26 @@ mod tests {
         assert_eq!(qwerty_char(0x10), Some('q'));
         assert_eq!(qwerty_char(0x03), Some('2'));
         assert_eq!(qwerty_char(0x4B), None);
+    }
+
+    #[test]
+    fn test_scan_code_of() {
+        assert_eq!(scan_code_of('q'), Some(0x10));
+        assert_eq!(scan_code_of('Q'), Some(0x10));
+        assert_eq!(scan_code_of('-'), Some(0x0C));
+        assert_eq!(scan_code_of('1'), Some(0x02));
+        assert_eq!(scan_code_of('ф'), None); // кириллицу сначала нормализуют
+    }
+
+    #[test]
+    fn test_to_qwerty() {
+        assert_eq!(to_qwerty('ф'), Some('a'));
+        assert_eq!(to_qwerty('Ф'), Some('a'));
+        assert_eq!(to_qwerty('ё'), Some('`'));
+        assert_eq!(to_qwerty('Ю'), Some('.'));
+        assert_eq!(to_qwerty('Q'), Some('q'));
+        assert_eq!(to_qwerty('-'), Some('-'));
+        assert_eq!(to_qwerty('€'), None);
     }
 
     #[test]

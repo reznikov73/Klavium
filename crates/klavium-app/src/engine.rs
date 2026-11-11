@@ -46,19 +46,7 @@ pub struct StoredTarget {
 }
 
 /// Состояние модификаторов на момент события.
-#[allow(clippy::struct_excessive_bools)]
-// четыре независимых модификатора — данные, а не состояние
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Modifiers {
-    /// Shift нажат.
-    pub shift: bool,
-    /// Ctrl нажат.
-    pub ctrl: bool,
-    /// Alt нажат.
-    pub alt: bool,
-    /// Win нажат.
-    pub win: bool,
-}
+pub type Modifiers = klavium_core::hotkeys::Mods;
 
 /// Абстракция над ОС — всё, что движку нужно снаружи.
 pub trait EngineIo: Send + Sync {
@@ -94,7 +82,7 @@ pub struct EngineConfig {
     /// Порог уверенности для авто/подсказки (по умолчанию 0.7).
     pub threshold: f64,
     /// Хоткей ручного исправления (по умолчанию `F8`).
-    pub hotkey_correct: String,
+    pub hotkey_correct: Option<klavium_core::hotkeys::Hotkey>,
     /// Пауза между словами одного набора (по умолчанию 5 с).
     pub word_timeout: Duration,
     /// Выполнять задания синхронно (используется тестами).
@@ -107,7 +95,7 @@ impl Default for EngineConfig {
             enabled: true,
             auto_correct: false,
             threshold: 0.7,
-            hotkey_correct: "F8".to_string(),
+            hotkey_correct: klavium_core::hotkeys::Hotkey::parse("F8").ok(),
             word_timeout: Duration::from_secs(5),
             run_jobs_inline: false,
         }
@@ -345,14 +333,18 @@ impl CorrectionEngine {
 
         let modifiers = self.io.modifiers();
         let config = self.config();
-        if crate::hotkeys::matches(
-            &config.hotkey_correct,
-            key.vk_code,
-            key.scan_code,
-            &modifiers,
-        ) {
-            self.request_apply();
-            return true;
+        if config.enabled {
+            if let Some(hotkey) = config.hotkey_correct {
+                if hotkey.matches(key.vk_code, key.scan_code, modifiers) {
+                    // Клавишу не отбираем, если исправлять нечего: иначе хоткей
+                    // молча съедал бы F8 в чужих приложениях.
+                    if self.pending_errors_count() > 0 {
+                        self.request_apply();
+                        return true;
+                    }
+                    return false;
+                }
+            }
         }
 
         let layout = self.io.current_layout();
@@ -1128,6 +1120,18 @@ mod tests {
         let _ = engine.process_key(&key);
     }
 
+    /// Нажать клавишу по виртуальному и скан-коду; вернуть признак подавления.
+    fn press_vk(engine: &CorrectionEngine, vk_code: u32, scan_code: u32) -> bool {
+        let key = KeyInput {
+            vk_code,
+            scan_code,
+            is_down: true,
+            injected: false,
+            extra_info: 0,
+        };
+        engine.process_key(&key)
+    }
+
     fn press_str(engine: &CorrectionEngine, text: &str) {
         for ch in text.chars() {
             press(engine, ch);
@@ -1233,6 +1237,36 @@ mod tests {
         let suppressed = engine.process_key(&f8);
         assert!(suppressed, "F8 должен подавляться");
         assert!(io.ops().contains(&Op::Backspaces(7)));
+    }
+
+    #[test]
+    fn test_f8_requires_exact_modifiers() {
+        let (engine, io, _events) = make_engine();
+        press_str(&engine, "ghbdtn ");
+        io.0.lock().unwrap().modifiers = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        // Ctrl+F8 — чужое сочетание: не наш хоткей и не подавляем.
+        assert!(!press_vk(&engine, 0x77, 0x42));
+        assert_eq!(engine.pending_errors_count(), 1);
+    }
+
+    #[test]
+    fn test_f8_not_stolen_when_idle_or_disabled() {
+        let (engine, _io, _events) = make_engine();
+        // Нечего исправлять — клавиша уходит в приложение.
+        assert!(!press_vk(&engine, 0x77, 0x42));
+
+        press_str(&engine, "ghbdtn ");
+        let disabled = EngineConfig {
+            enabled: false,
+            ..EngineConfig::default()
+        };
+        engine.update_config(disabled);
+        // Коррекция выключена — хоткей тоже не работает и не съедает F8.
+        assert!(!press_vk(&engine, 0x77, 0x42));
+        assert_eq!(engine.pending_errors_count(), 1);
     }
 
     #[test]

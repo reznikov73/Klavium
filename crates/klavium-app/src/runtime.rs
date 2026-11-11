@@ -31,7 +31,7 @@ pub fn engine_config(config: &AppConfig) -> EngineConfig {
         enabled: config.correction.enabled,
         auto_correct: config.correction.auto_correct,
         threshold: config.correction.threshold,
-        hotkey_correct: config.correction.hotkey_correct.clone(),
+        hotkey_correct: crate::hotkeys::CompiledHotkeys::from_config(config).correction_apply,
         word_timeout: Duration::from_secs_f64(config.timeouts.word_start.max(0.1)),
         run_jobs_inline: false,
     }

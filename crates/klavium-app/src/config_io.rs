@@ -214,18 +214,48 @@ pub fn set_data_dir(current: &Path, target: Option<&Path>) -> anyhow::Result<Pat
 }
 
 /// Загрузить конфигурацию; при отсутствии/ошибке — умолчания.
+///
+/// Хоткеи прежних версий (`correction.hotkey_correct`, `voice.hotkey`)
+/// переносятся в секцию `hotkeys`, если её в файле ещё нет.
 #[must_use]
 pub fn load(path: &std::path::Path) -> AppConfig {
     let Ok(text) = std::fs::read_to_string(path) else {
         return AppConfig::default();
     };
-    serde_json::from_str(&text).unwrap_or_else(|error| {
+    let Ok(raw) = serde_json::from_str::<serde_json::Value>(&text) else {
+        eprintln!(
+            "[config] ошибка разбора {}; используются умолчания",
+            path.display()
+        );
+        return AppConfig::default();
+    };
+    let mut config: AppConfig = serde_json::from_value(raw.clone()).unwrap_or_else(|error| {
         eprintln!(
             "[config] ошибка разбора {}: {error}; используются умолчания",
             path.display()
         );
         AppConfig::default()
-    })
+    });
+    migrate_legacy_hotkeys(&mut config, &raw);
+    config
+}
+
+/// Перенести хоткеи из полей прежних версий в секцию `hotkeys`.
+fn migrate_legacy_hotkeys(config: &mut AppConfig, raw: &serde_json::Value) {
+    if raw.get("hotkeys").is_some() {
+        return;
+    }
+    let legacy = |pointer: &str| raw.pointer(pointer).and_then(serde_json::Value::as_str);
+    if let Some(spec) = legacy("/correction/hotkey_correct") {
+        if !spec.trim().is_empty() {
+            config.hotkeys.correction_apply = spec.to_string();
+        }
+    }
+    if let Some(spec) = legacy("/voice/hotkey") {
+        if !spec.trim().is_empty() {
+            config.hotkeys.voice_toggle = spec.to_string();
+        }
+    }
 }
 
 /// Сохранить конфигурацию (pretty JSON; создаёт каталог при необходимости).
@@ -306,6 +336,37 @@ mod tests {
         assert!(portable.join("logs").join("app.log").is_file());
         // старое место не трогаем — остаётся резервом
         assert!(legacy.join("config.json").is_file());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_legacy_hotkeys_are_migrated() {
+        let base = temp("hotkeys-legacy");
+        let path = base.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"correction":{"hotkey_correct":"Ctrl+Alt+K"},"voice":{"hotkey":"Ctrl+Alt+V"}}"#,
+        )
+        .unwrap();
+        let config = load(&path);
+        assert_eq!(config.hotkeys.correction_apply, "Ctrl+Alt+K");
+        assert_eq!(config.hotkeys.voice_toggle, "Ctrl+Alt+V");
+        assert_eq!(config.hotkeys.card_hide, "Esc");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_new_hotkey_section_wins_over_legacy() {
+        let base = temp("hotkeys-new");
+        let path = base.join("config.json");
+        std::fs::write(
+            &path,
+            r#"{"correction":{"hotkey_correct":"Ctrl+Alt+K"},"hotkeys":{"correction_apply":"F7"}}"#,
+        )
+        .unwrap();
+        let config = load(&path);
+        assert_eq!(config.hotkeys.correction_apply, "F7");
+        assert_eq!(config.hotkeys.voice_toggle, "F9");
         let _ = std::fs::remove_dir_all(&base);
     }
 

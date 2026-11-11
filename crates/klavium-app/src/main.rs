@@ -3,7 +3,7 @@
 //! Поток: single instance → конфиг → журнал → оверлей → сервисы (статистика,
 //! звук, мониторинг раскладки, голос) → движок коррекции и хук → трей-иконка →
 //! окно настроек (egui) на главном потоке. Приложение живёт в трее; «Выход» —
-//! из меню; аварийный выход — Ctrl+Shift+Q.
+//! из меню или по настраиваемому хоткею (по умолчанию `Ctrl+Shift+Q`).
 //!
 //! Дымовой режим (автотест): `KLAVIUM_APP_SMOKE=<сек>`, показать окно сразу:
 //! `KLAVIUM_APP_SHOW_SETTINGS=1`; тост раскладки: `KLAVIUM_APP_TOAST_DEMO=en|ru`;
@@ -18,6 +18,7 @@ use std::sync::{mpsc, Arc, Mutex, RwLock};
 
 use klavium_app::config_io;
 use klavium_app::engine::{CorrectionEngine, KeyInput};
+use klavium_app::hotkeys::CompiledHotkeys;
 use klavium_app::real_io::{self, PlatformIo};
 use klavium_app::runtime::{self, SharedConfig};
 use klavium_app::{logging, models, services, sound, stats, voice};
@@ -76,6 +77,8 @@ fn main() -> anyhow::Result<()> {
     sync_autostart(&config);
 
     let shared: SharedConfig = Arc::new(RwLock::new(config.clone()));
+    // Разобранные хоткеи: хук читает готовые сочетания, без разбора строк.
+    let compiled_hotkeys = Arc::new(RwLock::new(CompiledHotkeys::from_config(&config)));
 
     // Сервисы: статистика, звук
     let stats_service = Arc::new(stats::StatsService::new(paths.stats_path()));
@@ -140,7 +143,7 @@ fn main() -> anyhow::Result<()> {
         Arc::clone(&engine),
         Arc::clone(&overlay),
         Arc::clone(&voice_service),
-        Arc::clone(&shared),
+        Arc::clone(&compiled_hotkeys),
     )?;
 
     // Общие объекты окна настроек: живут всё время работы приложения и
@@ -159,6 +162,7 @@ fn main() -> anyhow::Result<()> {
         data_note: paths.note.clone(),
         config_path: paths.config_path,
         tray_queue: Arc::clone(&tray_queue),
+        hotkeys: compiled_hotkeys,
     };
     drop(ui_tx); // единственные отправители остаются в потоке трея
 
@@ -194,6 +198,7 @@ struct UiRuntime {
     data_note: Option<String>,
     config_path: PathBuf,
     tray_queue: tray::TrayQueue,
+    hotkeys: Arc<RwLock<CompiledHotkeys>>,
 }
 
 /// Цикл «открыть/закрыть окно настроек» до завершения приложения.
@@ -219,6 +224,7 @@ fn run_ui_loop(runtime: &UiRuntime, ui_rx: &mpsc::Receiver<()>, mut open_now: bo
                 data_dir: runtime.data_dir.clone(),
                 data_note: runtime.data_note.clone(),
                 tray_queue: Arc::clone(&runtime.tray_queue),
+                hotkeys: Arc::clone(&runtime.hotkeys),
             });
             UI_OPEN.store(false, Ordering::SeqCst);
             window::hide_settings_windows();
@@ -253,6 +259,7 @@ struct UiContext {
     data_dir: PathBuf,
     data_note: Option<String>,
     tray_queue: tray::TrayQueue,
+    hotkeys: Arc<RwLock<CompiledHotkeys>>,
 }
 
 /// Асинхронный перенос каталога данных (кнопки в «Общих»).
@@ -324,6 +331,7 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
     let downloads_state = Arc::clone(&ui.downloads);
     let vosk_install_start = Arc::clone(&ui.vosk_install);
     let vosk_install_state = Arc::clone(&ui.vosk_install);
+    let save_hotkeys = Arc::clone(&ui.hotkeys);
     let settings_context = settings::SettingsContext {
         config: ui.config,
         on_save: Box::new(move |new_config: AppConfig| -> Result<(), String> {
@@ -332,6 +340,10 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
             *save_shared
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = new_config.clone();
+            *save_hotkeys
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                CompiledHotkeys::from_config(&new_config);
             sync_autostart(&new_config);
             voice_reload.reload(); // движок перечитает настройки на лету
             tracing::info!(target: "klavium", "настройки сохранены");
@@ -364,54 +376,51 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
     settings::run(settings_context)
 }
 
-/// Установить клавиатурный хук: аварийный выход, Esc-скрытие карточки,
-/// хоткей голосового ввода, движок.
+/// Установить клавиатурный хук: выход, скрытие карточки, голосовой ввод, движок.
 fn install_hook(
     engine: Arc<CorrectionEngine>,
     overlay: Arc<overlay::OverlayHandle>,
     voice: Arc<voice::VoiceService>,
-    config: SharedConfig,
+    compiled: Arc<RwLock<CompiledHotkeys>>,
 ) -> anyhow::Result<hook::KeyboardHook> {
     hook::install(move |event| {
-        if event.extra_info == hook::INJECT_EXTRA_INFO {
+        if event.extra_info == hook::INJECT_EXTRA_INFO || !event.is_down {
             return hook::HookDecision::Propagate;
         }
-        if !event.is_down {
+        // Своё окно не перехватываем: иначе нельзя ни печатать в полях
+        // настроек, ни назначить хоткей нажатием клавиши.
+        if window::is_own_foreground() {
             return hook::HookDecision::Propagate;
         }
 
-        // Аварийный выход
-        if event.vk_code == hook::vk::Q
-            && hook::is_key_pressed(hook::vk::CONTROL)
-            && hook::is_key_pressed(hook::vk::SHIFT)
+        let modifiers = real_io::current_modifiers();
+        let hotkeys = *compiled
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+        if hotkeys
+            .quit
+            .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
         {
             std::process::exit(0);
         }
 
-        // Esc скрывает видимую карточку (в приложение не уходит)
-        if event.vk_code == hook::vk::ESCAPE && overlay.is_visible() {
+        // Скрытие карточки (по умолчанию Esc): в приложение не уходит
+        if hotkeys
+            .card_hide
+            .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
+            && overlay.is_visible()
+        {
             overlay.hide();
             return hook::HookDecision::Suppress;
         }
 
-        // Хоткей голосового ввода (по умолчанию F9), если фича включена
-        let voice_hotkey_hit = {
-            let guard = config
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if guard.voice.enabled {
-                let modifiers = real_io::current_modifiers();
-                klavium_app::hotkeys::matches(
-                    &guard.voice.hotkey,
-                    event.vk_code,
-                    event.scan_code,
-                    &modifiers,
-                )
-            } else {
-                false
-            }
-        };
-        if voice_hotkey_hit {
+        // Голосовой ввод — только когда фича включена в настройках
+        if hotkeys.voice_enabled
+            && hotkeys
+                .voice_toggle
+                .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
+        {
             voice.toggle();
             return hook::HookDecision::Suppress;
         }

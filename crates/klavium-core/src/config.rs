@@ -195,6 +195,34 @@ pub struct AutostartConfig {
     pub enabled: bool,
 }
 
+/// Горячие клавиши приложения.
+///
+/// Строки разбираются [`crate::hotkeys::Hotkey::parse`]; пустая строка —
+/// «не задано». Изменения применяются без перезапуска программы.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HotkeysConfig {
+    /// Применить отложенное исправление раскладки.
+    pub correction_apply: String,
+    /// Скрыть карточку «было → станет».
+    pub card_hide: String,
+    /// Включить/выключить голосовой ввод.
+    pub voice_toggle: String,
+    /// Полностью закрыть Klavium.
+    pub quit: String,
+}
+
+impl Default for HotkeysConfig {
+    fn default() -> Self {
+        Self {
+            correction_apply: "F8".to_string(),
+            card_hide: "Esc".to_string(),
+            voice_toggle: "F9".to_string(),
+            quit: "Ctrl+Shift+Q".to_string(),
+        }
+    }
+}
+
 /// Статистика.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -224,10 +252,6 @@ pub struct CorrectionConfig {
     pub threshold: f64,
     /// Автоматически исправлять без подтверждения.
     pub auto_correct: bool,
-    /// Хоткей исправления.
-    pub hotkey_correct: String,
-    /// Хоткей показа подсказки.
-    pub hotkey_show: String,
     /// Показывать подсказки.
     pub show_notifications: bool,
 }
@@ -238,8 +262,6 @@ impl Default for CorrectionConfig {
             enabled: true,
             threshold: 0.7,
             auto_correct: false,
-            hotkey_correct: "F8".to_string(),
-            hotkey_show: "F8".to_string(),
             show_notifications: true,
         }
     }
@@ -258,8 +280,6 @@ pub struct VoiceConfig {
     pub model: String,
     /// Язык (`auto`/`ru`/`en`).
     pub language: String,
-    /// Хоткей.
-    pub hotkey: String,
     /// Голосовая пунктуация.
     pub punct_dict: bool,
     /// Автозаглавные буквы.
@@ -275,7 +295,6 @@ impl Default for VoiceConfig {
             engine: "whisper".to_string(),
             model: String::new(),
             language: "auto".to_string(),
-            hotkey: "F9".to_string(),
             punct_dict: true,
             auto_capitalize: true,
             vosk_model_path: String::new(),
@@ -314,6 +333,8 @@ pub struct AppConfig {
     pub notifications: NotificationsConfig,
     /// Автозапуск.
     pub autostart: AutostartConfig,
+    /// Горячие клавиши.
+    pub hotkeys: HotkeysConfig,
     /// Статистика.
     pub statistics: StatisticsConfig,
     /// Коррекция.
@@ -332,7 +353,10 @@ mod tests {
     fn test_config_defaults() {
         let config = AppConfig::default();
         assert_eq!(config.correction.threshold, 0.7);
-        assert_eq!(config.correction.hotkey_correct, "F8");
+        assert_eq!(config.hotkeys.correction_apply, "F8");
+        assert_eq!(config.hotkeys.card_hide, "Esc");
+        assert_eq!(config.hotkeys.voice_toggle, "F9");
+        assert_eq!(config.hotkeys.quit, "Ctrl+Shift+Q");
         assert_eq!(config.sounds.ru.frequency, 500);
         assert_eq!(config.sounds.ru.count, 2);
         assert_eq!(config.sounds.ru.pause_ms, 30);
@@ -379,7 +403,7 @@ mod tests {
         let config: AppConfig = serde_json::from_str(json).expect("частичный JSON");
         assert_eq!(config.correction.threshold, 0.85);
         assert!(config.correction.enabled);
-        assert_eq!(config.correction.hotkey_correct, "F8");
+        assert_eq!(config.hotkeys.correction_apply, "F8");
         assert_eq!(config.sounds.switch.duration_ms, 50);
     }
 
