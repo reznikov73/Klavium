@@ -385,8 +385,8 @@ impl SettingsApp {
         ui.add_space(4.0);
         ui.label(
             RichText::new(
-                "Нажмите кнопку с текущим сочетанием и введите новое — хук поймает любую \
-                 клавишу, включая Pause и PrintScreen. Esc отменяет ввод.",
+                "Нажмите кнопку с текущим сочетанием и введите новое (Esc отменяет ввод). \
+                 Если клавиша не ловится, впишите сочетание в поле ниже.",
             )
             .small()
             .weak(),
@@ -446,25 +446,26 @@ impl SettingsApp {
         }
         self.handle_capture(ctx);
 
-        ui.add_space(4.0);
-        ui.collapsing("Ввести вручную", |ui| {
-            ui.label(
-                RichText::new(
-                    "Формат: Ctrl+Shift+Q, F8, Space, PageUp. Пустое поле — клавиша не назначена.",
-                )
-                .small()
-                .weak(),
-            );
-            for field in HotkeyField::ALL {
-                ui.horizontal(|ui| {
-                    ui.label(field.title());
-                    ui.add(
-                        egui::TextEdit::singleline(field.spec_mut(&mut self.config))
-                            .desired_width(190.0),
-                    );
-                });
-            }
-        });
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
+        ui.label(RichText::new("Ввести вручную").strong());
+        ui.label(
+            RichText::new(
+                "Формат: Ctrl+Pause, Ctrl+Shift+Q, F8, Space. Пустое поле — клавиша не назначена.",
+            )
+            .small()
+            .weak(),
+        );
+        for field in HotkeyField::ALL {
+            ui.horizontal(|ui| {
+                ui.label(field.title());
+                ui.add(
+                    egui::TextEdit::singleline(field.spec_mut(&mut self.config))
+                        .desired_width(190.0),
+                );
+            });
+        }
     }
 
     /// Поймать следующее нажатие для выбранного действия.

@@ -412,12 +412,20 @@ fn install_hook(
     capture_queue: settings::CaptureQueue,
 ) -> anyhow::Result<hook::KeyboardHook> {
     hook::install(move |event| {
-        if event.extra_info == hook::INJECT_EXTRA_INFO || !event.is_down {
+        if event.extra_info == hook::INJECT_EXTRA_INFO {
             return hook::HookDecision::Propagate;
         }
+        // Захват хоткея: Pause и PrintScreen часто приходят только как
+        // отпускание клавиши, поэтому в этом режиме принимаем оба события.
         if CAPTURING.load(Ordering::Relaxed) {
-            // Назначение хоткея: отдаём нажатие окну и запоминаем для него.
-            // Сами модификаторы пропускаем — назначается клавиша с ними.
+            if event.is_down {
+                tracing::debug!(
+                    target: "klavium",
+                    "key: vk={:#04X} scan={:#04X} capturing=true",
+                    event.vk_code,
+                    event.scan_code
+                );
+            }
             if !is_modifier_vk(event.vk_code) {
                 let mods = real_io::current_modifiers();
                 if let Ok(mut queue) = capture_queue.lock() {
@@ -430,6 +438,9 @@ fn install_hook(
                     }
                 }
             }
+            return hook::HookDecision::Propagate;
+        }
+        if !event.is_down {
             return hook::HookDecision::Propagate;
         }
 

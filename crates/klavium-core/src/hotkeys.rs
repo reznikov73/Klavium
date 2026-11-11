@@ -132,6 +132,18 @@ impl NamedKey {
         }
     }
 
+    /// Совпадает ли клавиша с виртуальным кодом.
+    ///
+    /// `Pause` принимает и `VK_CANCEL`: `Ctrl+Break` Windows присылает как
+    /// `VK_CANCEL` (0x03), а не `VK_PAUSE`.
+    #[must_use]
+    pub const fn matches_vk(self, vk: u32) -> bool {
+        match self {
+            Self::Pause => vk == 0x13 || vk == 0x03,
+            _ => vk == self.vk(),
+        }
+    }
+
     /// Каноническое имя для [`Hotkey::to_spec`].
     #[must_use]
     pub const fn name(self) -> &'static str {
@@ -181,7 +193,7 @@ impl NamedKey {
             "right" | "arrowright" => Self::Right,
             "up" | "arrowup" => Self::Up,
             "down" | "arrowdown" => Self::Down,
-            "pause" | "break" => Self::Pause,
+            "pause" | "break" | "cancel" => Self::Pause,
             "scrolllock" | "scroll" => Self::ScrollLock,
             "printscreen" | "prtsc" | "print" => Self::PrintScreen,
             _ => return None,
@@ -207,7 +219,7 @@ impl NamedKey {
             0x27 => Self::Right,
             0x26 => Self::Up,
             0x28 => Self::Down,
-            0x13 => Self::Pause,
+            0x13 | 0x03 => Self::Pause,
             0x91 => Self::ScrollLock,
             0x2C => Self::PrintScreen,
             _ => return None,
@@ -232,7 +244,7 @@ impl Trigger {
     pub fn matches(self, vk_code: u32, scan_code: u32) -> bool {
         match self {
             Self::Function(number) => vk_code == VK_F1 + u32::from(number) - 1,
-            Self::Named(key) => vk_code == key.vk(),
+            Self::Named(key) => key.matches_vk(vk_code),
             Self::Char(ch) => keys::scan_code_of(ch) == Some(scan_code),
         }
     }
@@ -563,6 +575,15 @@ mod tests {
         assert!(parse("PrintScreen").matches(0x2C, 0x37, Mods::none()));
         assert!(parse("ScrollLock").matches(0x91, 0x46, Mods::none()));
         assert_eq!(parse("Break").to_spec(), "Pause");
+        // Ctrl+Break Windows присылает как VK_CANCEL — это тот же Pause.
+        assert!(parse("Ctrl+Pause").matches(
+            0x03,
+            0x45,
+            Mods {
+                ctrl: true,
+                ..Mods::none()
+            }
+        ));
     }
 
     #[test]
