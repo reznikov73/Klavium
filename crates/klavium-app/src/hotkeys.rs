@@ -13,6 +13,8 @@ use klavium_core::hotkeys::Hotkey;
 pub struct CompiledHotkeys {
     /// Применить отложенное исправление раскладки.
     pub correction_apply: Option<Hotkey>,
+    /// Отменить последнее исправление.
+    pub correction_undo: Option<Hotkey>,
     /// Скрыть карточку «было → станет».
     pub card_hide: Option<Hotkey>,
     /// Включить/выключить голосовой ввод.
@@ -32,6 +34,7 @@ impl CompiledHotkeys {
     pub fn from_config(config: &AppConfig) -> Self {
         Self {
             correction_apply: parse_spec(&config.hotkeys.correction_apply),
+            correction_undo: parse_spec(&config.hotkeys.correction_undo),
             card_hide: parse_spec(&config.hotkeys.card_hide),
             voice_toggle: parse_spec(&config.hotkeys.voice_toggle),
             quit: parse_spec(&config.hotkeys.quit),

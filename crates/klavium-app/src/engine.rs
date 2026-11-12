@@ -239,6 +239,7 @@ enum Job {
     Correct {
         id: u64,
     },
+    Undo,
     VoiceInsert {
         text: String,
     },
@@ -276,11 +277,30 @@ impl Drop for StateGuard<'_> {
     }
 }
 
+/// Последнее исправление — для отмены по хоткею.
+#[derive(Clone)]
+struct LastCorrection {
+    /// Что вставили (столько же символов стираем при отмене).
+    inserted: String,
+    /// Что вернуть (исходное слово в исходной раскладке).
+    restore: String,
+    /// Раскладка до исправления.
+    source_layout: Option<Layout>,
+    /// Где исправляли.
+    target: StoredTarget,
+    /// Когда исправляли (старше минуты не отменяем).
+    at: Instant,
+}
+
 /// Движок коррекции. Создаётся один раз и разделяется между потоками.
 pub struct CorrectionEngine {
     state: Mutex<InnerState>,
     /// Сколько ошибок ждёт в очереди — читается хуком без блокировки.
     pending_count: AtomicUsize,
+    /// Есть ли что отменять (хук читает без блокировки).
+    undo_available: AtomicBool,
+    /// Последнее исправление для отмены.
+    last_correction: Mutex<Option<LastCorrection>>,
     suppress: AtomicBool,
     io: std::sync::Arc<dyn EngineIo>,
     config: RwLock<EngineConfig>,
@@ -301,6 +321,8 @@ impl CorrectionEngine {
         let engine = std::sync::Arc::new(Self {
             state: Mutex::new(InnerState::default()),
             pending_count: AtomicUsize::new(0),
+            undo_available: AtomicBool::new(false),
+            last_correction: Mutex::new(None),
             suppress: AtomicBool::new(false),
             io,
             config: RwLock::new(config),
@@ -359,6 +381,17 @@ impl CorrectionEngine {
     /// Запросить ручное исправление очереди (F8). Неблокирующе.
     pub fn request_apply(&self) {
         self.submit_job(Job::ApplyPending);
+    }
+
+    /// Есть ли что отменять (без блокировок — для потока хука).
+    #[must_use]
+    pub fn can_undo(&self) -> bool {
+        self.undo_available.load(Ordering::Relaxed)
+    }
+
+    /// Отменить последнее исправление. Неблокирующе.
+    pub fn request_undo(&self) {
+        self.submit_job(Job::Undo);
     }
 
     /// Вставить продиктованный текст (голосовая вставка). Неблокирующе.
@@ -465,6 +498,7 @@ impl CorrectionEngine {
             Job::Correct { id } => {
                 let _ = self.perform_correction(id);
             }
+            Job::Undo => self.undo_last(),
             Job::VoiceInsert { text } => self.perform_voice_insert(&text),
             Job::Key(key) => self.handle_key(&key),
         }
@@ -869,6 +903,18 @@ impl CorrectionEngine {
             self.io.send_text(&text_after);
         }
 
+        // Запомнить для отмены: стираем ровно то, что вставили, и возвращаем
+        // исходное слово с хвостом в исходной раскладке.
+        self.remember_for_undo(
+            &error.original,
+            &error.corrected,
+            terminator.as_deref(),
+            &text_after,
+            target_layout,
+            original_layout,
+            error.input_target,
+        );
+
         {
             let term = terminator.unwrap_or_default();
             let old_suffix = format!("{}{}", error.original, term);
@@ -894,6 +940,107 @@ impl CorrectionEngine {
         true
     }
 
+    /// Запомнить последнее исправление и разрешить отмену.
+    #[allow(clippy::too_many_arguments)] // все параметры — из одного места вызова
+    fn remember_for_undo(
+        &self,
+        original: &str,
+        corrected: &str,
+        terminator: Option<&str>,
+        text_after: &str,
+        target_layout: Option<Layout>,
+        source_layout: Option<Layout>,
+        target: StoredTarget,
+    ) {
+        let mut inserted = corrected.to_string();
+        let mut restore = original.to_string();
+        let mut term_source = terminator.map(str::to_string);
+        let mut after_source = Some(text_after.to_string()).filter(|text| !text.is_empty());
+        if let (Some(target_layout), Some(source_layout)) = (target_layout, source_layout) {
+            let source = source_layout.as_str();
+            let target = target_layout.as_str();
+            if let Some(text) = &term_source {
+                term_source = Some(convert::convert_punct(text, target, source));
+            }
+            if let Some(text) = &after_source {
+                after_source = Some(convert::convert_punct(text, target, source));
+            }
+        }
+        if let Some(text) = terminator {
+            inserted.push_str(text);
+        }
+        inserted.push_str(text_after);
+        if let Some(text) = &term_source {
+            restore.push_str(text);
+        }
+        if let Some(text) = &after_source {
+            restore.push_str(text);
+        }
+        self.store_last_correction(LastCorrection {
+            inserted,
+            restore,
+            source_layout,
+            target,
+            at: Instant::now(),
+        });
+    }
+
+    /// Запомнить последнее исправление и разрешить отмену.
+    fn store_last_correction(&self, last: LastCorrection) {
+        if let Ok(mut slot) = self.last_correction.lock() {
+            *slot = Some(last);
+            self.undo_available.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Забыть последнее исправление (после пакетной правки отмена не имеет смысла).
+    fn clear_last_correction(&self) {
+        if let Ok(mut slot) = self.last_correction.lock() {
+            *slot = None;
+        }
+        self.undo_available.store(false, Ordering::Relaxed);
+    }
+
+    /// Отменить последнее исправление: стереть вставленное и вернуть исходное.
+    fn undo_last(&self) {
+        let Some(last) = self
+            .last_correction
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+        else {
+            return;
+        };
+        self.undo_available.store(false, Ordering::Relaxed);
+
+        if last.at.elapsed() > Duration::from_secs(60) {
+            tracing::debug!(target: "klavium", "отмена: исправление слишком старое");
+            return;
+        }
+        let current = self.io.capture_target();
+        if current.window != last.target.window {
+            tracing::debug!(target: "klavium", "отмена: другое окно");
+            return;
+        }
+
+        let _guard = SuppressGuard::new(&self.suppress);
+        let _ = self.io.restore_target(&last.target);
+        self.io
+            .send_backspaces(u32::try_from(last.inserted.chars().count()).unwrap_or(u32::MAX));
+        if let Some(source) = last.source_layout {
+            if self.io.current_layout() != Some(source) {
+                let _ = self.io.switch_layout(source);
+            }
+        }
+        self.io.send_text(&last.restore);
+        tracing::info!(
+            target: "klavium",
+            "исправление отменено: «{}» → «{}»",
+            last.inserted,
+            last.restore
+        );
+    }
+
     /// Пакетная коррекция: весь span от первой ошибки до курсора за один проход.
     fn perform_batch(&self, ids: &[u64]) -> bool {
         let errors = self.errors_snapshot(ids);
@@ -904,6 +1051,8 @@ impl CorrectionEngine {
             }
             return false;
         }
+        // После пакетной правки отмена одного слова не имеет смысла.
+        self.clear_last_correction();
 
         let first_target = errors[0].input_target;
         if errors.iter().any(|e| e.input_target != first_target) {
@@ -1246,6 +1395,47 @@ mod tests {
                 return event;
             }
         }
+    }
+
+    #[test]
+    fn test_undo_restores_original_text_and_layout() {
+        let (engine, io, _events) = make_engine();
+        press_str(&engine, "ghbdtn ");
+        assert_eq!(engine.pending_errors_count(), 1);
+        assert!(!engine.can_undo(), "до исправления отменять нечего");
+
+        engine.request_apply();
+        assert!(engine.can_undo());
+        let applied = io.ops().len();
+
+        engine.request_undo();
+        assert!(!engine.can_undo(), "отмена одноразовая");
+
+        let ops = io.ops();
+        let undo = &ops[applied..];
+        // Стереть вставленное «привет » — 7 символов.
+        assert!(undo.contains(&Op::Backspaces(7)), "ops: {undo:?}");
+        // Вернуть исходное слово вместе с пробелом в английской раскладке.
+        assert!(
+            undo.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "ghbdtn ")),
+            "ops: {undo:?}"
+        );
+    }
+
+    #[test]
+    fn test_undo_is_ignored_in_another_window() {
+        let (engine, io, _events) = make_engine();
+        press_str(&engine, "ghbdtn ");
+        engine.request_apply();
+        assert!(engine.can_undo());
+
+        // Пользователь перешёл в другое окно — отмена не должна ничего трогать.
+        io.set_target_window(99);
+        let before = io.ops().len();
+        engine.request_undo();
+        assert_eq!(io.ops().len(), before, "в чужом окне ничего не вводим");
+        assert!(!engine.can_undo());
     }
 
     #[test]

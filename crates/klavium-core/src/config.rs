@@ -204,6 +204,9 @@ pub struct AutostartConfig {
 pub struct HotkeysConfig {
     /// Применить отложенное исправление раскладки.
     pub correction_apply: String,
+    /// Отменить последнее исправление (вернуть исходное слово и раскладку).
+    pub correction_undo: String,
+    /// Скрыть подсказку.
     /// Скрыть карточку «было → станет».
     pub card_hide: String,
     /// Включить/выключить голосовой ввод.
@@ -216,6 +219,7 @@ impl Default for HotkeysConfig {
     fn default() -> Self {
         Self {
             correction_apply: "F8".to_string(),
+            correction_undo: "Ctrl+Alt+Z".to_string(),
             card_hide: "Esc".to_string(),
             voice_toggle: "F9".to_string(),
             quit: "Ctrl+Shift+Q".to_string(),

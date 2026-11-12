@@ -506,6 +506,17 @@ fn install_hook(
             return hook::HookDecision::Suppress;
         }
 
+        // Отмена последнего исправления: тихо игнорируем, если отменять нечего.
+        if hotkeys
+            .correction_undo
+            .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
+            && engine.can_undo()
+        {
+            tracing::debug!(target: "klavium", "хоткей: отменить исправление");
+            engine.request_undo();
+            return hook::HookDecision::Suppress;
+        }
+
         // «Немые» клавиши (key-up без нажатия) дальше не нужны:
         // движок коррекции смотрит только настоящие нажатия.
         if !event.is_down {
