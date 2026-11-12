@@ -9,10 +9,11 @@ use std::time::Duration;
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-    VIRTUAL_KEY, VK_BACK, VK_RETURN, VK_TAB,
+    VIRTUAL_KEY, VK_BACK, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RETURN,
+    VK_RMENU, VK_RSHIFT, VK_RWIN, VK_TAB,
 };
 
-use crate::hook::INJECT_EXTRA_INFO;
+use crate::hook::{is_key_pressed, INJECT_EXTRA_INFO};
 
 /// Собрать событие клавиатуры с меткой Klavium.
 fn key_input(vk: VIRTUAL_KEY, scan: u16, flags: u32) -> INPUT {
@@ -105,12 +106,42 @@ pub fn send_unicode_char(c: char) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Отпустить физически зажатые модификаторы перед инъекцией.
+///
+/// Хоткей с модификаторами (`Ctrl+Shift+Z` и т.п.) срабатывает, пока пальцы
+/// ещё держат `Ctrl`/`Shift`. Без этого отпускания `Backspace` уходил бы
+/// в активное приложение как `Ctrl+Shift+Backspace` — слово не стиралось,
+/// и исправление «дописывало» текст рядом со старым.
+pub fn release_modifiers() {
+    const MODIFIERS: [VIRTUAL_KEY; 8] = [
+        VK_LCONTROL,
+        VK_RCONTROL,
+        VK_LSHIFT,
+        VK_RSHIFT,
+        VK_LMENU,
+        VK_RMENU,
+        VK_LWIN,
+        VK_RWIN,
+    ];
+    let mut released = false;
+    for vk in MODIFIERS {
+        if is_key_pressed(u32::from(vk)) && send_key_up(vk).is_ok() {
+            released = true;
+        }
+    }
+    if released {
+        // Дать приложению обработать отпускание до первых Backspace.
+        sleep(Duration::from_millis(25));
+    }
+}
+
 /// Ввести текст: печатные символы — Unicode-событиями, `'\n'` → Enter, `'\t'` → Tab.
 ///
 /// # Errors
 ///
 /// Ошибка, если `SendInput` не принял события.
 pub fn send_unicode_text(text: &str, delay: Duration) -> anyhow::Result<()> {
+    release_modifiers();
     for ch in text.chars() {
         match ch {
             '\n' => press_key(VK_RETURN)?,
@@ -128,6 +159,7 @@ pub fn send_unicode_text(text: &str, delay: Duration) -> anyhow::Result<()> {
 ///
 /// Ошибка, если `SendInput` не принял события.
 pub fn send_backspaces(count: u32, delay: Duration) -> anyhow::Result<()> {
+    release_modifiers();
     for _ in 0..count {
         press_key(VK_BACK)?;
         sleep(delay);
