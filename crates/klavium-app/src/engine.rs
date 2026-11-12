@@ -1,7 +1,8 @@
 //! Конвейер коррекции: буфер слов, очередь ошибок, единый воркер, F8 и пакетный режим.
 //!
 //! Порядок работы:
-//! - слова копятся в буфере (буквы + «двусмысленные» символы);
+//! - в колбэке хука — только хоткеи и отправка события воркеру (быстро);
+//! - слова копятся в буфере воркера (буквы + «двусмысленные» символы);
 //! - завершённое слово анализируется `smart_correction` (klavium-core);
 //! - найденные ошибки попадают в очередь с учётом набранного «хвоста»
 //!   (`text_after`) и разделителя (`terminator`);
@@ -11,15 +12,19 @@
 //!
 //! Взаимодействие с ОС спрятано за трейтом [`EngineIo`]: реальная реализация —
 //! [`crate::real_io::PlatformIo`], в тестах используется мок.
+//!
+//! Бюджет потока хука: никакой работы со словарями и никаких замков — детекция
+//! живёт в воркере, а очередь ошибок видна хуку через [`AtomicUsize`].
 
 // Явные области блокировок состояния читаются лучше, чем микро-оптимизация
 // времени жизни `MutexGuard`; nursery-правило отключено осознанно.
 #![allow(clippy::significant_drop_tightening)]
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::{Mutex, MutexGuard, PoisonError, RwLock};
+use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -214,18 +219,57 @@ struct InnerState {
 #[derive(Clone)]
 enum Job {
     ApplyPending,
-    Correct { id: u64 },
-    VoiceInsert { text: String },
+    Correct {
+        id: u64,
+    },
+    VoiceInsert {
+        text: String,
+    },
+    /// Событие клавиши для детекции (обрабатывается воркером).
+    Key(KeyInput),
+}
+
+/// Доступ к состоянию, обновляющий атомарный счётчик очереди при отпускании.
+///
+/// Так счётчик не может «отстать»: любая мутация `pending_errors` происходит
+/// через этот guard и отражается в [`CorrectionEngine::pending_count`].
+struct StateGuard<'a> {
+    inner: MutexGuard<'a, InnerState>,
+    counter: &'a AtomicUsize,
+}
+
+impl Deref for StateGuard<'_> {
+    type Target = InnerState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl DerefMut for StateGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
+}
+
+impl Drop for StateGuard<'_> {
+    fn drop(&mut self) {
+        self.counter
+            .store(self.inner.pending_errors.len(), Ordering::Relaxed);
+    }
 }
 
 /// Движок коррекции. Создаётся один раз и разделяется между потоками.
 pub struct CorrectionEngine {
     state: Mutex<InnerState>,
+    /// Сколько ошибок ждёт в очереди — читается хуком без блокировки.
+    pending_count: AtomicUsize,
     suppress: AtomicBool,
     io: std::sync::Arc<dyn EngineIo>,
     config: RwLock<EngineConfig>,
     events: Sender<EngineEvent>,
-    jobs: Mutex<Option<Sender<Job>>>,
+    /// Канал воркера; пусто — синхронный режим (тесты).
+    jobs: OnceLock<Sender<Job>>,
 }
 
 impl CorrectionEngine {
@@ -239,11 +283,12 @@ impl CorrectionEngine {
         let inline = config.run_jobs_inline;
         let engine = std::sync::Arc::new(Self {
             state: Mutex::new(InnerState::default()),
+            pending_count: AtomicUsize::new(0),
             suppress: AtomicBool::new(false),
             io,
             config: RwLock::new(config),
             events,
-            jobs: Mutex::new(None),
+            jobs: OnceLock::new(),
         });
 
         if !inline {
@@ -261,17 +306,17 @@ impl CorrectionEngine {
                     }
                 });
             if spawned.is_ok() {
-                *engine.lock_jobs() = Some(tx);
+                let _ = engine.jobs.set(tx);
             }
             // при ошибке создания потока остаёмся в синхронном режиме
         }
         engine
     }
 
-    /// Сколько ошибок ждёт в очереди.
+    /// Сколько ошибок ждёт в очереди (без блокировок — для потока хука).
     #[must_use]
     pub fn pending_errors_count(&self) -> usize {
-        self.lock_state().pending_errors.len()
+        self.pending_count.load(Ordering::Relaxed)
     }
 
     /// Идёт ли сейчас коррекция (физический ввод подавляется).
@@ -310,6 +355,10 @@ impl CorrectionEngine {
 
     /// Обработать событие клавиши (вызывается из потока хука; быстро).
     ///
+    /// Здесь только то, что требует синхронного ответа: подавление во время
+    /// коррекции и хоткей исправления. Детекция и буфер слова уходят воркеру —
+    /// фонетика по словарям не должна занимать поток хука (`LowLevelHooksTimeout`).
+    ///
     /// Возвращает `true`, если событие нужно подавить.
     #[must_use]
     pub fn process_key(&self, key: &KeyInput) -> bool {
@@ -323,19 +372,13 @@ impl CorrectionEngine {
             return true;
         }
 
-        if key.vk_code == VK_BACK {
-            self.track_backspace();
-            return false;
-        }
-        if is_modifier_vk(key.vk_code) {
-            return false;
-        }
-
-        let modifiers = self.io.modifiers();
+        // Хоткей исправления — единственное, что нужно решить сразу.
         let config = self.config();
         if config.enabled {
             if let Some(hotkey) = config.hotkey_correct {
-                if hotkey.matches(key.vk_code, key.scan_code, modifiers) {
+                if !is_modifier_vk(key.vk_code)
+                    && hotkey.matches(key.vk_code, key.scan_code, self.io.modifiers())
+                {
                     // Клавишу не отбираем, если исправлять нечего: иначе хоткей
                     // молча съедал бы F8 в чужих приложениях.
                     if self.pending_errors_count() > 0 {
@@ -347,29 +390,50 @@ impl CorrectionEngine {
             }
         }
 
+        // Всё остальное — воркеру: буфер слова и словари живут там.
+        self.submit_job(Job::Key(*key));
+        false
+    }
+
+    /// Детекция и буферизация слова (выполняется воркером, не на потоке хука).
+    fn handle_key(&self, key: &KeyInput) {
+        if key.extra_info == INJECT_EXTRA_INFO || !key.is_down {
+            return;
+        }
+        // Пока событие ехало в очередь, могла начаться коррекция.
+        if self.is_correcting() {
+            return;
+        }
+        if key.vk_code == VK_BACK {
+            self.track_backspace();
+            return;
+        }
+        if is_modifier_vk(key.vk_code) {
+            return;
+        }
+
+        let modifiers = self.io.modifiers();
         let layout = self.io.current_layout();
         let Some(ch) = keys::resolve_char(key.vk_code, key.scan_code, layout, modifiers.shift)
         else {
-            return false;
+            return;
         };
         self.track_typed_char(ch);
         self.handle_char(ch, layout);
-        false
     }
 
     // ==================== внутреннее ====================
 
-    fn lock_state(&self) -> MutexGuard<'_, InnerState> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn lock_jobs(&self) -> MutexGuard<'_, Option<Sender<Job>>> {
-        self.jobs.lock().unwrap_or_else(PoisonError::into_inner)
+    /// Взять состояние; при отпускании замка обновляется атомарный счётчик.
+    fn lock_state(&self) -> StateGuard<'_> {
+        StateGuard {
+            inner: self.state.lock().unwrap_or_else(PoisonError::into_inner),
+            counter: &self.pending_count,
+        }
     }
 
     fn submit_job(&self, job: Job) {
-        let sender = self.lock_jobs().clone();
-        match sender {
+        match self.jobs.get() {
             Some(tx) => {
                 let _ = tx.send(job);
             }
@@ -384,6 +448,7 @@ impl CorrectionEngine {
                 let _ = self.perform_correction(id);
             }
             Job::VoiceInsert { text } => self.perform_voice_insert(&text),
+            Job::Key(key) => self.handle_key(&key),
         }
     }
 
