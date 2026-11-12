@@ -420,7 +420,8 @@ fn split_tokens(spec: &str) -> Vec<String> {
         if part.is_empty() {
             continue;
         }
-        let lower = part.to_lowercase();
+        // Нормализуем раскладку: «секд-зфгыу» → «ctrl-pause».
+        let lower = normalize_layout(&part.to_lowercase());
         let is_known = modifier_of(&lower).is_some() || parse_trigger(&lower).is_some();
         if !is_known && lower.len() > 1 && (lower.contains('-') || lower.contains('_')) {
             for sub in lower.split(['-', '_']) {
@@ -433,6 +434,14 @@ fn split_tokens(spec: &str) -> Vec<String> {
         }
     }
     tokens
+}
+
+/// Привести токен к физическим клавишам EN-раскладки.
+fn normalize_layout(token: &str) -> String {
+    token
+        .chars()
+        .map(|ch| keys::to_qwerty(ch).unwrap_or(ch))
+        .collect()
 }
 
 /// Распознать модификатор.
@@ -462,6 +471,39 @@ fn parse_trigger(token: &str) -> Option<Trigger> {
     match (chars.next(), chars.next()) {
         (Some(ch), None) => keys::to_qwerty(ch).map(Trigger::Char),
         _ => None,
+    }
+}
+
+/// Зажатые клавиши: отличаем обычное отпускание от «немой» клавиши.
+///
+/// `Pause` (и на части клавиатур `PrintScreen`) приходит от Windows только
+/// как отпускание — без нажатия. Хоткеи по таким клавишам обязаны срабатывать
+/// на key-up: [`HeldKeys::observe`] возвращает `true` для key-down и для
+/// key-up, у которого не было парного нажатия. Остальные key-up (клавишу
+/// действительно нажимали) не «стреляют» повторно.
+#[derive(Debug)]
+pub struct HeldKeys([bool; 256]);
+
+impl Default for HeldKeys {
+    fn default() -> Self {
+        Self([false; 256])
+    }
+}
+
+impl HeldKeys {
+    /// Отметить событие клавиши; `true` — событие похоже на нажатие
+    /// и должно попасть в обработку хоткеев.
+    pub fn observe(&mut self, vk_code: u32, is_down: bool) -> bool {
+        let Some(held) = self.0.get_mut(vk_code as usize) else {
+            return is_down;
+        };
+        if is_down {
+            *held = true;
+            return true;
+        }
+        let was_held = *held;
+        *held = false;
+        !was_held
     }
 }
 
@@ -600,6 +642,51 @@ mod tests {
         assert_eq!(Hotkey::from_key(0x1E, 0x1E, Mods::none()), Some(parse("A")));
         // Модификатор назначить нельзя.
         assert_eq!(Hotkey::from_key(0x11, 0x1D, ctrl), None);
+    }
+
+    #[test]
+    fn test_russian_layout_typing_in_manual_field() {
+        // Пользователь набрал «ctrl-pause», не переключив раскладку.
+        // RU-набор «pause»: з→p, ф→a, г→u, ы→s, у→e.
+        assert_eq!(parse("секд-зфгыу"), parse("Ctrl+Pause"));
+        assert_eq!(parse("Секд+Зфгыу"), parse("Ctrl+Pause"));
+        assert_eq!(parse("Зфгыу"), parse("Pause"));
+    }
+
+    #[test]
+    fn test_held_keys_pause_fires_on_lone_key_up() {
+        let mut held = HeldKeys::default();
+        // Pause (VK 0x13) присылает только отпускание — каждое срабатывает.
+        assert!(held.observe(0x13, false));
+        assert!(held.observe(0x13, false));
+    }
+
+    #[test]
+    fn test_held_keys_regular_key_fires_only_on_down() {
+        let mut held = HeldKeys::default();
+        assert!(held.observe(0x51, true)); // Q: нажатие
+        assert!(held.observe(0x51, true)); // Q: автоповтор
+        let release = held.observe(0x51, false);
+        assert!(!release); // отпускание уже нажатой клавиши не стреляет
+        assert!(held.observe(0x51, true)); // новое нажатие снова стреляет
+    }
+
+    #[test]
+    fn test_held_keys_cancel_after_down_does_not_double_fire() {
+        let mut held = HeldKeys::default();
+        // Ctrl+Pause: VK_CANCEL (0x03) пришёл нажатием — срабатывает оно,
+        // а парное отпускание уже нет.
+        assert!(held.observe(0x03, true));
+        assert!(!held.observe(0x03, false));
+        // Если же система прислала VK_CANCEL только отпусканием — стреляет оно.
+        assert!(held.observe(0x03, false));
+    }
+
+    #[test]
+    fn test_held_keys_unknown_vk_falls_back_to_is_down() {
+        let mut held = HeldKeys::default();
+        assert!(held.observe(0x1000, true));
+        assert!(!held.observe(0x1000, false));
     }
 
     #[test]

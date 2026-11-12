@@ -23,6 +23,7 @@ use klavium_app::real_io::{self, PlatformIo};
 use klavium_app::runtime::{self, SharedConfig};
 use klavium_app::{logging, models, services, sound, stats, voice};
 use klavium_core::config::AppConfig;
+use klavium_core::hotkeys::HeldKeys;
 use klavium_platform::{autostart, hook, instance, overlay, window};
 use klavium_ui::{settings, tray};
 
@@ -411,22 +412,32 @@ fn install_hook(
     compiled: Arc<RwLock<CompiledHotkeys>>,
     capture_queue: settings::CaptureQueue,
 ) -> anyhow::Result<hook::KeyboardHook> {
+    // Зажатые клавиши: key-up без парного key-down — «немая» клавиша
+    // (Pause присылает только отпускание) — по ней хоткеи тоже срабатывают.
+    let held_keys = Arc::new(Mutex::new(HeldKeys::default()));
     hook::install(move |event| {
         if event.extra_info == hook::INJECT_EXTRA_INFO {
             return hook::HookDecision::Propagate;
         }
+        // Событие «похоже на нажатие»: либо key-down, либо key-up «немой»
+        // клавиши (Pause и др.), у которой нажатия не бывает.
+        let fires = held_keys.lock().map_or(event.is_down, |mut held| {
+            held.observe(event.vk_code, event.is_down)
+        });
+
         // Захват хоткея: Pause и PrintScreen часто приходят только как
         // отпускание клавиши, поэтому в этом режиме принимаем оба события.
         if CAPTURING.load(Ordering::Relaxed) {
-            if event.is_down {
-                tracing::debug!(
-                    target: "klavium",
-                    "key: vk={:#04X} scan={:#04X} capturing=true",
-                    event.vk_code,
-                    event.scan_code
-                );
-            }
-            if !is_modifier_vk(event.vk_code) {
+            tracing::debug!(
+                target: "klavium",
+                "key: vk={:#04X} scan={:#04X} down={} capturing=true",
+                event.vk_code,
+                event.scan_code,
+                event.is_down
+            );
+            // Назначаем только нажатия при активном окне настроек:
+            // наборы в чужих окнах очередь не подпорчивают.
+            if !is_modifier_vk(event.vk_code) && window::is_own_foreground() {
                 let mods = real_io::current_modifiers();
                 if let Ok(mut queue) = capture_queue.lock() {
                     if queue.len() < 8 {
@@ -440,7 +451,7 @@ fn install_hook(
             }
             return hook::HookDecision::Propagate;
         }
-        if !event.is_down {
+        if !fires {
             return hook::HookDecision::Propagate;
         }
 
@@ -488,6 +499,12 @@ fn install_hook(
             tracing::debug!(target: "klavium", "хоткей: применить исправление");
             engine.request_apply();
             return hook::HookDecision::Suppress;
+        }
+
+        // «Немые» клавиши (key-up без нажатия) дальше не нужны:
+        // движок коррекции смотрит только настоящие нажатия.
+        if !event.is_down {
+            return hook::HookDecision::Propagate;
         }
 
         // Дальше — только движок: свои поля настроек не корректируем.

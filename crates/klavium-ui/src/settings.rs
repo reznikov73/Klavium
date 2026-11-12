@@ -470,8 +470,8 @@ impl SettingsApp {
 
     /// Поймать следующее нажатие для выбранного действия.
     ///
-    /// Нажатия приходят из глобального хука ([`CaptureQueue`]), а не из egui:
-    /// окно не получает `Pause`, `PrintScreen`, `ScrollLock`.
+    /// Сначала — событие окна (обычные клавиши), затем очередь от хука
+    /// ([`CaptureQueue`]): `Pause`/`PrintScreen` окно может не получить.
     fn handle_capture(&mut self, ctx: &egui::Context) {
         let Some(field) = self.capture else {
             return;
@@ -481,12 +481,40 @@ impl SettingsApp {
             .is_some_and(|since| since.elapsed() > Duration::from_secs(10))
         {
             self.status = Some((
-                "Время ожидания истекло — нажмите «Изменить» ещё раз".to_string(),
+                "Время ожидания истекло — нажмите кнопку с сочетанием ещё раз".to_string(),
                 false,
             ));
             self.cancel_capture();
             return;
         }
+
+        // 1) Клавиша, доставленная окну (winit/egui).
+        let window_key = ctx.input(|input| {
+            input.events.iter().find_map(|event| match event {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                    ..
+                } => Some((*key, *modifiers)),
+                _ => None,
+            })
+        });
+        if let Some((key, modifiers)) = window_key {
+            if key == egui::Key::Escape && modifiers.is_none() {
+                self.cancel_capture();
+                return;
+            }
+            if let Ok(spec) = hotkey_from_egui(key, modifiers) {
+                self.status = Some((format!("Назначено: {spec}"), false));
+                *field.spec_mut(&mut self.config) = spec;
+                self.cancel_capture();
+                return;
+            }
+        }
+
+        // 2) Клавиша из глобального хука (Pause, PrintScreen, key-up).
         let pressed = self
             .capture_queue
             .lock()
@@ -919,6 +947,43 @@ fn hotkey_conflicts(config: &AppConfig) -> Vec<String> {
         }
     }
     conflicts
+}
+
+/// Собрать спецификацию из события окна (клавиша + модификаторы).
+fn hotkey_from_egui(key: egui::Key, modifiers: egui::Modifiers) -> Result<String, String> {
+    let mut spec = String::new();
+    // На Windows `command` — это Ctrl; Win-клавиша в egui не попадает.
+    if modifiers.ctrl || modifiers.command {
+        spec.push_str("Ctrl+");
+    }
+    if modifiers.shift {
+        spec.push_str("Shift+");
+    }
+    if modifiers.alt {
+        spec.push_str("Alt+");
+    }
+    spec.push_str(egui_key_token(key));
+    Hotkey::parse(&spec)
+        .map(Hotkey::to_spec)
+        .map_err(|error| format!("Эту клавишу нельзя назначить: {error}"))
+}
+
+/// Имя клавиши окна в терминах спецификации хоткея.
+fn egui_key_token(key: egui::Key) -> &'static str {
+    match key {
+        egui::Key::Minus => "-",
+        egui::Key::Equals => "=",
+        egui::Key::Comma => ",",
+        egui::Key::Period => ".",
+        egui::Key::Semicolon => ";",
+        egui::Key::Quote => "'",
+        egui::Key::Backtick => "`",
+        egui::Key::Slash => "/",
+        egui::Key::Backslash => "\\",
+        egui::Key::OpenBracket => "[",
+        egui::Key::CloseBracket => "]",
+        other => other.name(),
+    }
 }
 
 /// Тумблер вкл/выкл в стиле переключателя (зелёный = включено).
