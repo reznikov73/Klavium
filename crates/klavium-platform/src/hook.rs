@@ -7,13 +7,18 @@
 //! Решение [`HookDecision::Suppress`] подавляет клавишу: она не уходит
 //! в активное приложение (и не далее по цепочке хуков).
 
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use windows_sys::Win32::Foundation::{GetLastError, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::SystemInformation::GetTickCount;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
-use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    GetAsyncKeyState, GetLastInputInfo, LASTINPUTINFO,
+};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
     TranslateMessage, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WM_KEYDOWN,
@@ -95,10 +100,32 @@ type HookCallback = Box<dyn Fn(KeyEvent) -> HookDecision + Send + 'static>;
 
 static CALLBACK: Mutex<Option<HookCallback>> = Mutex::new(None);
 
+/// Тик (`GetTickCount`, мс) последнего события, дошедшего до хука.
+///
+/// По нему сторож видит, что в системе был ввод, а хук его не получил:
+/// Windows молча снимает `WH_KEYBOARD_LL`, если колбэк превысил системный
+/// таймаут (`LowLevelHooksTimeout`, обычно 300 мс), — и тогда «немые»
+/// клавиши (Pause, PrintScreen) и горячие клавиши перестают работать
+/// до перезапуска приложения.
+static LAST_EVENT_TICK: AtomicU32 = AtomicU32::new(0);
+
+/// Сколько колбэк может работать, прежде чем напишем предупреждение.
+const SLOW_CALLBACK_MS: u128 = 50;
+
+/// Расхождение «система видела ввод» и «хук видел событие», после которого
+/// считаем хук потерянным (мс).
+const HOOK_LOST_MS: i32 = 2000;
+
+/// Не переустанавливаем хук чаще, чем раз в столько (мс).
+const REINSTALL_COOLDOWN_MS: u32 = 30_000;
+
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code < 0 {
         return CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam);
     }
+
+    let started = Instant::now();
+    LAST_EVENT_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
 
     let message = wparam as u32;
     let (is_down, is_sys) = match message {
@@ -130,6 +157,15 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 
     if suppress {
         return 1;
+    }
+    let elapsed = started.elapsed();
+    if elapsed.as_millis() >= SLOW_CALLBACK_MS {
+        tracing::warn!(
+            target: "klavium",
+            "хук: колбэк занял {} мс (vk={:#04X}) — риск снятия хука системой",
+            elapsed.as_millis(),
+            event.vk_code
+        );
     }
     CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam)
 }
@@ -176,7 +212,11 @@ pub fn install(
                 return;
             }
 
-            let _ = tx.send(Ok(unsafe { GetCurrentThreadId() }));
+            let thread_id = unsafe { GetCurrentThreadId() };
+            LAST_EVENT_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
+            tracing::info!(target: "klavium", "хук: установлен (поток {thread_id})");
+            let _ = tx.send(Ok(thread_id));
+            spawn_watchdog(thread_id);
 
             let mut message: MSG = unsafe { std::mem::zeroed() };
             loop {
@@ -193,6 +233,7 @@ pub fn install(
             unsafe {
                 UnhookWindowsHookEx(hook);
             }
+            WATCHDOG_STOP.store(true, Ordering::Relaxed);
             if let Ok(mut slot) = CALLBACK.lock() {
                 *slot = None;
             }
@@ -214,9 +255,69 @@ pub fn install(
     }
 }
 
+/// Флаг остановки сторожа.
+static WATCHDOG_STOP: AtomicBool = AtomicBool::new(false);
+
+/// Сторож хука: если в системе был ввод, а хук его не получил, —
+/// просит поток хука переустановить хук.
+///
+/// `GetLastInputInfo` обновляется и от мыши, поэтому при работе без
+/// клавиатуры возможны ложные срабатывания; они безвредны (переустановка
+/// занимает микросекунды) и ограничены паузой [`REINSTALL_COOLDOWN_MS`].
+fn spawn_watchdog(thread_id: u32) {
+    WATCHDOG_STOP.store(false, Ordering::Relaxed);
+    let spawn = std::thread::Builder::new()
+        .name("hook-watchdog".to_string())
+        .spawn(move || {
+            let cooldown = Duration::from_millis(u64::from(REINSTALL_COOLDOWN_MS));
+            let mut last_warning = Instant::now()
+                .checked_sub(cooldown)
+                .unwrap_or_else(Instant::now);
+            while !WATCHDOG_STOP.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(1000));
+                let Some(system_tick) = last_input_tick() else {
+                    continue;
+                };
+                let our_tick = LAST_EVENT_TICK.load(Ordering::Relaxed);
+                // Знаковая разница: отрицательная — системный ввод старее
+                // нашего последнего события (это нормально).
+                let lag = system_tick.wrapping_sub(our_tick) as i32;
+                if lag < HOOK_LOST_MS || last_warning.elapsed() < cooldown {
+                    continue;
+                }
+                last_warning = Instant::now();
+                // Переустановка «на месте» (Unhook + SetWindowsHookEx в том же
+                // потоке) в проверке убивала хук — поэтому только сообщаем
+                // в журнал: проблема видна, лечится перезапуском приложения.
+                tracing::warn!(
+                    target: "klavium",
+                    "хук: клавиатура не доходит ({lag} мс) — перезапустите Klavium"
+                );
+                let _ = thread_id;
+            }
+        });
+    if spawn.is_err() {
+        tracing::error!(target: "klavium", "хук: не удалось запустить сторожевой поток");
+    }
+}
+
+/// Тик последнего ввода в системе (`GetLastInputInfo`), если доступен.
+fn last_input_tick() -> Option<u32> {
+    let mut info = LASTINPUTINFO {
+        cbSize: u32::try_from(std::mem::size_of::<LASTINPUTINFO>()).ok()?,
+        dwTime: 0,
+    };
+    if unsafe { GetLastInputInfo(&mut info) } == 0 {
+        None
+    } else {
+        Some(info.dwTime)
+    }
+}
+
 impl KeyboardHook {
     /// Снять хук и дождаться завершения потока хука.
     pub fn uninstall(mut self) {
+        WATCHDOG_STOP.store(true, Ordering::Relaxed);
         unsafe {
             PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0);
         }

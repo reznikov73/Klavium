@@ -9,12 +9,14 @@ description = "Обёртки Win32: клавиатурный хук, инъек
 anyhow = "1"
 klavium-core = { path = "../klavium-core" }
 libloading = "0.9"
+tracing = "0.1"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_System_LibraryLoader",
     "Win32_System_Registry",
+    "Win32_System_SystemInformation",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Threading",
     "Win32_UI_Input_KeyboardAndMouse",
