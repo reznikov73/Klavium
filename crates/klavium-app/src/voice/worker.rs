@@ -59,6 +59,7 @@ impl RecognitionWorker {
         let thread_status = Arc::clone(&status);
         let join = thread::Builder::new()
             .name("voice-worker".to_string())
+            .stack_size(256 * 1024)
             .spawn(move || {
                 worker_loop(
                     &phrase_rx,

@@ -7,13 +7,15 @@ members = [
     "crates/klavium-app",
 ]
 
-# Релизная сборка: тонкий LTO и обрезка символов — меньше и быстрее exe.
+# Релизная сборка: полный LTO и одна единица кодогенерации — компактнее и быстрее exe.
+# `panic = "abort"` не включаем: код полагается на PoisonError и раскрутку в тестах.
 [profile.release]
-lto = "thin"
+lto = "fat"
+codegen-units = 1
 strip = true
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 authors = ["Klavium contributors"]

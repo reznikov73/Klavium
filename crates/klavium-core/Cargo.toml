@@ -9,6 +9,10 @@ description = "Чистая логика: карты символов, дете�
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+fst = "0.4"
+
+[build-dependencies]
+fst = "0.4"
 
 [dev-dependencies]
 anyhow = "1"

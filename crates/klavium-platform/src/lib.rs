@@ -18,6 +18,7 @@ pub mod hook;
 pub mod inject;
 pub mod instance;
 pub mod layout;
+pub mod mem;
 pub mod overlay;
 pub mod vosk;
 pub mod window;

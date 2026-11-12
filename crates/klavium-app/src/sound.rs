@@ -48,6 +48,7 @@ impl SoundService {
         let (tx, rx) = mpsc::channel::<PlayRequest>();
         let _ = thread::Builder::new()
             .name("sound".to_string())
+            .stack_size(256 * 1024)
             .spawn(move || {
                 while let Ok(request) = rx.recv() {
                     match request {

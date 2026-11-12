@@ -56,6 +56,7 @@ impl ModelDownloader {
         let file = file.to_string();
         let spawned = thread::Builder::new()
             .name("model-download".to_string())
+            .stack_size(256 * 1024)
             .spawn(move || downloader.run(&file));
         if spawned.is_err() {
             let mut state = lock(&self.state);
@@ -168,6 +169,7 @@ impl VoskInstaller {
         let installer = Arc::clone(self);
         let spawned = thread::Builder::new()
             .name("vosk-install".to_string())
+            .stack_size(256 * 1024)
             .spawn(move || installer.run());
         if spawned.is_err() {
             let mut state = lock(&self.state);

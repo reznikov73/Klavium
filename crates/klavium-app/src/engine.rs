@@ -298,6 +298,7 @@ impl CorrectionEngine {
             let worker = std::sync::Arc::downgrade(&engine);
             let spawned = thread::Builder::new()
                 .name("correction-worker".to_string())
+                .stack_size(512 * 1024)
                 .spawn(move || {
                     while let Ok(job) = rx.recv() {
                         if let Some(engine) = worker.upgrade() {

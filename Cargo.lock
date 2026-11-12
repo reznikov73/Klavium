@@ -1484,6 +1484,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
+name = "fst"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ab85b9b05e3978cc9a9cf8fea7f01b494e1a09ed3037e16ba39edc7a29eb61a"
+
+[[package]]
 name = "futures-channel"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2312,7 +2318,7 @@ checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
 name = "klavium-app"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "cpal",
@@ -2335,9 +2341,10 @@ dependencies = [
 
 [[package]]
 name = "klavium-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
+ "fst",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -2345,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "klavium-platform"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "klavium-core",
@@ -2356,7 +2363,7 @@ dependencies = [
 
 [[package]]
 name = "klavium-ui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "eframe",

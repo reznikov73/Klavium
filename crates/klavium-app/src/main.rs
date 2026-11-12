@@ -156,6 +156,8 @@ fn main() -> anyhow::Result<()> {
 
     maybe_spawn_toast_demo(&overlay);
 
+    spawn_memory_trim();
+
     let keyboard_hook = install_hook(
         Arc::clone(&engine),
         Arc::clone(&overlay),
@@ -527,6 +529,20 @@ const fn is_modifier_vk(vk: u32) -> bool {
         vk,
         0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0 | 0xA1 | 0xA2 | 0xA3 | 0xA4 | 0xA5
     )
+}
+
+/// Через 30 с после старта отдать системе неиспользуемые страницы.
+///
+/// RSS в Диспетчере задач начинает показывать реальное потребление, а не
+/// «запас», оставленный аллокатором после инициализации словарей и окна.
+fn spawn_memory_trim() {
+    let _ = std::thread::Builder::new()
+        .name("mem-trim".to_string())
+        .stack_size(64 * 1024)
+        .spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(30));
+            klavium_platform::mem::trim_working_set();
+        });
 }
 
 /// Дымовой режим: автоматически включить диктовку (`KLAVIUM_APP_VOICE=1`)

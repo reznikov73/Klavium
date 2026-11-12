@@ -27,6 +27,7 @@ pub fn spawn_layout_monitor(
 ) {
     let _ = thread::Builder::new()
         .name("layout-monitor".to_string())
+        .stack_size(256 * 1024)
         .spawn(move || {
             let mut last: Option<Layout> = None;
             loop {

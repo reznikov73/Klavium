@@ -133,6 +133,7 @@ impl StatsService {
         let service = Arc::clone(self);
         let spawned = thread::Builder::new()
             .name("stats-autosave".to_string())
+            .stack_size(256 * 1024)
             .spawn(move || loop {
                 thread::sleep(Duration::from_secs(30));
                 if service.dirty.load(Ordering::Relaxed) {

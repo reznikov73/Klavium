@@ -106,6 +106,7 @@ impl VoiceService {
         let thread_test = Arc::clone(&test);
         let manager = thread::Builder::new()
             .name("voice-manager".to_string())
+            .stack_size(256 * 1024)
             .spawn(move || {
                 manager_loop(
                     &rx,
@@ -469,6 +470,7 @@ fn start_session(
     let error_tx = worker_tx.clone();
     let listen = thread::Builder::new()
         .name("voice-listen".to_string())
+        .stack_size(256 * 1024)
         .spawn(move || {
             if let Err(error) = audio::run_capture_session(&listen_active, &phrase_tx) {
                 let _ = error_tx.send(VoiceInbound::AudioFailed(error.to_string()));
@@ -513,6 +515,7 @@ fn start_test_session(
     let error_tx = worker_tx.clone();
     let listen = thread::Builder::new()
         .name("voice-test-listen".to_string())
+        .stack_size(256 * 1024)
         .spawn(move || {
             if let Err(error) = audio::run_capture_session(&listen_active, &phrase_tx) {
                 let _ = error_tx.send(VoiceInbound::AudioFailed(error.to_string()));
@@ -556,6 +559,7 @@ fn spawn_test_timer(worker_tx: &Sender<VoiceInbound>, snapshot: Arc<Mutex<Recogn
     let tx = worker_tx.clone();
     let _ = thread::Builder::new()
         .name("voice-test-timer".to_string())
+        .stack_size(256 * 1024)
         .spawn(move || {
             for remaining in (1..=TEST_SECONDS).rev() {
                 {

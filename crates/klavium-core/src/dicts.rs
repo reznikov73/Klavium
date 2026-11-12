@@ -1,12 +1,12 @@
 //! Словари слов и «запретных» биграмм.
 //!
-//! Данные словарей и биграмм (каталог `data/`) встроены в бинарник на
-//! этапе компиляции (`include_str!`). Словари
-//! отсортированы, поиск — бинарный: это даёт
-//! компактную память и предсказуемую производительность.
+//! Словари собираются на этапе компиляции в компактные FST (`build.rs`):
+//! общие префиксы и суффиксы сжимаются, поиск идёт прямо по байтам в
+//! бинарнике — без `Vec<&str>` с указателями (это экономило ~8,5 МБ кучи
+//! на 532 тыс. слов и заметный кусок размера exe).
 //!
 //! Русский словарь дополняется ё→е-нормализованными формами
-//! («ёжик» == «ежик»).
+//! («ёжик» == «ежик») — это делает `build.rs`.
 //!
 //! Из биграмм-таблиц используются только «запретные» пары (значение < 0) —
 //! именно они влияют на результат.
@@ -14,15 +14,22 @@
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-const ENGLISH_WORDS_TXT: &str = include_str!("../data/english_words.txt");
-const RUSSIAN_WORDS_TXT: &str = include_str!("../data/russian_words.txt");
+use fst::Set;
+
+const ENGLISH_WORDS_FST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/english_words.fst"));
+const RUSSIAN_WORDS_FST: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/russian_words.fst"));
 const RU_BIGRAMS_JSON: &str = include_str!("../data/ru_bigrams.json");
 const EN_BIGRAMS_JSON: &str = include_str!("../data/en_bigrams.json");
 
+/// Счётчики слов, сгенерированные `build.rs`.
+mod counts {
+    include!(concat!(env!("OUT_DIR"), "/dict_counts.rs"));
+}
+
 /// Словари, загруженные из встроенных данных (создаются один раз за процесс).
 pub struct Dictionaries {
-    english_words: Vec<&'static str>,
-    russian_words: Vec<&'static str>,
+    english_words: Set<&'static [u8]>,
+    russian_words: Set<&'static [u8]>,
     ru_bad_bigrams: Vec<(char, char)>,
     en_bad_bigrams: Vec<(char, char)>,
 }
@@ -39,13 +46,13 @@ impl Dictionaries {
     /// Есть ли слово в английском словаре.
     #[must_use]
     pub fn contains_english(&self, word: &str) -> bool {
-        self.english_words.binary_search(&word).is_ok()
+        self.english_words.contains(word)
     }
 
     /// Есть ли слово в русском словаре (с учётом ё→е-нормализации).
     #[must_use]
     pub fn contains_russian(&self, word: &str) -> bool {
-        self.russian_words.binary_search(&word).is_ok()
+        self.russian_words.contains(word)
     }
 
     /// Является ли пара символов запретной русской биграммой.
@@ -63,60 +70,23 @@ impl Dictionaries {
     /// Количество слов в английском словаре (для тестов и диагностики).
     #[must_use]
     pub const fn english_word_count(&self) -> usize {
-        self.english_words.len()
+        counts::ENGLISH_WORD_COUNT
     }
 
     /// Количество слов в русском словаре (для тестов и диагностики).
     #[must_use]
     pub const fn russian_word_count(&self) -> usize {
-        self.russian_words.len()
+        counts::RUSSIAN_WORD_COUNT
     }
 }
 
 fn build() -> Dictionaries {
     Dictionaries {
-        english_words: sorted_words(ENGLISH_WORDS_TXT.lines()),
-        russian_words: build_russian_words(),
+        english_words: Set::new(ENGLISH_WORDS_FST).expect("FST английского словаря повреждён"),
+        russian_words: Set::new(RUSSIAN_WORDS_FST).expect("FST русского словаря повреждён"),
         ru_bad_bigrams: bad_bigrams(RU_BIGRAMS_JSON),
         en_bad_bigrams: bad_bigrams(EN_BIGRAMS_JSON),
     }
-}
-
-/// Разобрать список слов: обрезать пробелы, привести
-/// к нижнему регистру (строки, где это необходимо), убрать пустые,
-/// отсортировать, дедуплицировать.
-fn sorted_words(lines: impl Iterator<Item = &'static str>) -> Vec<&'static str> {
-    let mut words: Vec<&'static str> = Vec::new();
-    for line in lines {
-        let word = line.trim();
-        if word.is_empty() {
-            continue;
-        }
-        if word.chars().any(char::is_uppercase) {
-            words.push(Box::leak(word.to_lowercase().into_boxed_str()));
-        } else {
-            words.push(word);
-        }
-    }
-    words.sort_unstable();
-    words.dedup();
-    words
-}
-
-/// Русский словарь + ё→е-нормализованные формы.
-fn build_russian_words() -> Vec<&'static str> {
-    let mut words = sorted_words(RUSSIAN_WORDS_TXT.lines());
-    let mut normalized: Vec<&'static str> = Vec::new();
-    for word in &words {
-        if word.contains('ё') {
-            let replaced = Box::leak(word.replace('ё', "е").into_boxed_str());
-            normalized.push(replaced);
-        }
-    }
-    words.extend(normalized);
-    words.sort_unstable();
-    words.dedup();
-    words
 }
 
 /// Извлечь «запретные» биграммы (значение < 0) из JSON-таблицы.
@@ -139,6 +109,7 @@ fn bad_bigrams(json: &str) -> Vec<(char, char)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fst::Streamer;
 
     #[test]
     fn test_dictionaries_non_empty() {
@@ -158,11 +129,15 @@ mod tests {
     #[test]
     fn test_words_are_lowercase() {
         let dicts = Dictionaries::get();
-        for word in dicts.english_words.iter().chain(dicts.russian_words.iter()) {
-            assert!(
-                !word.chars().any(char::is_uppercase),
-                "слово не в нижнем регистре: {word:?}"
-            );
+        for set in [&dicts.english_words, &dicts.russian_words] {
+            let mut stream = set.stream();
+            while let Some(key) = stream.next() {
+                let word = std::str::from_utf8(key).expect("слово в UTF-8");
+                assert!(
+                    !word.chars().any(char::is_uppercase),
+                    "слово не в нижнем регистре: {word:?}"
+                );
+            }
         }
     }
 
@@ -175,6 +150,24 @@ mod tests {
         assert!(dicts.contains_russian("привет"));
         assert!(dicts.contains_russian("бабушка"));
         assert!(!dicts.contains_russian("hello"));
+    }
+
+    #[test]
+    fn test_yo_normalized_forms() {
+        // У любого слова с «ё» должна находиться е-форма (её добавляет build.rs).
+        let dicts = Dictionaries::get();
+        let mut stream = dicts.russian_words.stream();
+        while let Some(key) = stream.next() {
+            let word = std::str::from_utf8(key).expect("слово в UTF-8");
+            if word.contains('ё') {
+                let normalized = word.replace('ё', "е");
+                assert!(
+                    dicts.contains_russian(&normalized),
+                    "нет е-формы для {word:?}"
+                );
+                return;
+            }
+        }
     }
 
     #[test]
