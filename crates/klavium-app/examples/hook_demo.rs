@@ -123,6 +123,8 @@ fn main() -> anyhow::Result<()> {
             new_text: "привет".to_string(),
             meta: "95%".to_string(),
             anchor: Some((260, 300, 20)),
+            apply_key: "F8".to_string(),
+            hide_key: "Esc".to_string(),
         });
         println!("[demo] тестовая карточка показана (KLAVIUM_DEMO_SHOWCARD)");
     }
@@ -188,6 +190,8 @@ fn handle_event(event: EngineEvent, overlay: &OverlayHandle) {
                 new_text: corrected,
                 meta: format!("{:.0}%", confidence * 100.0),
                 anchor: screen,
+                apply_key: "F8".to_string(),
+                hide_key: "Esc".to_string(),
             });
         }
         EngineEvent::CorrectionApplied {

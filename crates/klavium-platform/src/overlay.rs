@@ -28,9 +28,9 @@ use windows_sys::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, CreateFontW, CreatePen, CreateSolidBrush, DeleteDC,
     DeleteObject, DrawTextW, FillRect, GetDC, GetMonitorInfoW, MonitorFromPoint, ReleaseDC,
     RoundRect, SelectObject, SetBkMode, SetTextColor, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    BLENDFUNCTION, CLEARTYPE_QUALITY, DEFAULT_CHARSET, DIB_RGB_COLORS, DT_CENTER, DT_END_ELLIPSIS,
-    DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, HDC, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    PS_NULL,
+    BLENDFUNCTION, CLEARTYPE_QUALITY, DEFAULT_CHARSET, DIB_RGB_COLORS, DT_CALCRECT, DT_CENTER,
+    DT_END_ELLIPSIS, DT_NOPREFIX, DT_RIGHT, DT_SINGLELINE, DT_VCENTER, HDC, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST, PS_NULL,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
@@ -76,6 +76,10 @@ pub struct CardRequest {
     pub meta: String,
     /// Позиция каретки `(x, y, высота строки)`; `None` — центр экрана.
     pub anchor: Option<(i32, i32, i32)>,
+    /// Сочетание «применить исправление» для пилюли; пусто — без пилюли.
+    pub apply_key: String,
+    /// Сочетание «скрыть подсказку» для пилюли; пусто — без пилюли.
+    pub hide_key: String,
 }
 
 enum Command {
@@ -572,6 +576,27 @@ fn draw_text(dc: HDC, text: &str, rect: &mut RECT, flags: u32) {
     }
 }
 
+/// Ширина текста в пикселях для текущего шрифта DC.
+fn text_width(dc: HDC, text: &str) -> i32 {
+    let text = wide(text);
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    unsafe {
+        DrawTextW(
+            dc,
+            text.as_ptr(),
+            -1,
+            &mut rect,
+            DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT,
+        );
+    }
+    rect.right - rect.left
+}
+
 fn draw_card(hwnd: HWND, position: (i32, i32), width: i32, height: i32, card: &CardRequest) {
     let Some(canvas) = Canvas::new(width, height) else {
         return;
@@ -640,38 +665,51 @@ fn draw_card(hwnd: HWND, position: (i32, i32), width: i32, height: i32, card: &C
             DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
         );
 
-        // Пилюли
+        // Пилюли: реальные сочетания из настроек (см. `CardRequest`).
         let pill_brush = CreateSolidBrush(rgb(45, 47, 54));
         SelectObject(dc, pill_brush);
-        RoundRect(dc, 28, 62, 148, 86, 12, 12);
-        RoundRect(dc, 156, 62, 262, 86, 12, 12);
-
         SelectObject(dc, font_small);
+        let mut pills: Vec<(RECT, String)> = Vec::new();
+        let mut pill_x = 28;
+        for (key, action) in [
+            (&card.apply_key, " — исправить"),
+            (&card.hide_key, " — скрыть"),
+        ] {
+            if key.is_empty() {
+                continue;
+            }
+            let label = format!("{key}{action}");
+            let pill_w = text_width(dc, &label) + 24;
+            let pill_right = pill_x + pill_w;
+            if pill_right > width - 16 {
+                break;
+            }
+            pills.push((
+                RECT {
+                    left: pill_x,
+                    top: 62,
+                    right: pill_right,
+                    bottom: 86,
+                },
+                label,
+            ));
+            pill_x = pill_right + 8;
+        }
+
+        for (rect, _) in &pills {
+            RoundRect(dc, rect.left, rect.top, rect.right, rect.bottom, 12, 12);
+        }
+
         SetTextColor(dc, rgb(220, 222, 228));
-        let mut pill1 = RECT {
-            left: 28,
-            top: 62,
-            right: 148,
-            bottom: 86,
-        };
-        draw_text(
-            dc,
-            "F8 — исправить",
-            &mut pill1,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-        );
-        let mut pill2 = RECT {
-            left: 156,
-            top: 62,
-            right: 262,
-            bottom: 86,
-        };
-        draw_text(
-            dc,
-            "Esc — скрыть",
-            &mut pill2,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-        );
+        for (rect, label) in &pills {
+            let mut pill = RECT { ..*rect };
+            draw_text(
+                dc,
+                label,
+                &mut pill,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            );
+        }
 
         SelectObject(dc, old_font);
         SelectObject(dc, old_brush);

@@ -103,11 +103,23 @@ pub fn handle_event(event: EngineEvent, overlay: &OverlayHandle, services: &Serv
             if statistics_enabled {
                 services.stats.add_word("layout_error");
             }
+            let (apply_key, hide_key) = {
+                let config = services
+                    .config
+                    .read()
+                    .unwrap_or_else(PoisonError::into_inner);
+                (
+                    config.hotkeys.correction_apply.clone(),
+                    config.hotkeys.card_hide.clone(),
+                )
+            };
             overlay.show_card(CardRequest {
                 old_text: original,
                 new_text: corrected,
                 meta: format!("{:.0}%", confidence * 100.0),
                 anchor: screen,
+                apply_key,
+                hide_key,
             });
         }
         EngineEvent::CorrectionApplied {
