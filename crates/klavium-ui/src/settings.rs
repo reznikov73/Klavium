@@ -912,6 +912,43 @@ impl SettingsApp {
                 )
             },
         );
+
+        widgets::row_separator(ui);
+        let speed_correction = &mut self.config.typing.speed_correction;
+        widgets::setting_row(
+            ui,
+            "Скорость печати исправлений",
+            Some("«Мгновенно» может терять символы в терминалах и RDP"),
+            |ui| {
+                widgets::segmented(
+                    ui,
+                    &[
+                        ("careful", "Аккуратно"),
+                        ("fast", "Быстро"),
+                        ("instant", "Мгновенно"),
+                    ],
+                    speed_correction,
+                )
+            },
+        );
+        widgets::row_separator(ui);
+        let speed_voice = &mut self.config.typing.speed_voice;
+        widgets::setting_row(
+            ui,
+            "Скорость голосовой вставки",
+            None,
+            |ui| {
+                widgets::segmented(
+                    ui,
+                    &[
+                        ("careful", "Аккуратно"),
+                        ("fast", "Быстро"),
+                        ("instant", "Мгновенно"),
+                    ],
+                    speed_voice,
+                )
+            },
+        );
     }
 
     fn draw_notifications(&mut self, ui: &mut egui::Ui) {
@@ -1023,6 +1060,32 @@ impl SettingsApp {
                 self.reset_armed = Some(Instant::now());
             }
         }
+    }
+
+    /// Состояние диктовки: бейдж, кнопка включения и текст статуса движка.
+    fn draw_voice_state(&self, ui: &mut egui::Ui, active: bool, status: &str) {
+        ui.horizontal(|ui| {
+            let (text, kind) = if active {
+                ("диктовка активна", widgets::BadgeKind::Ok)
+            } else {
+                ("диктовка выключена", widgets::BadgeKind::Info)
+            };
+            widgets::badge(ui, text, kind);
+            let label = if active {
+                "Выключить"
+            } else {
+                "Включить"
+            };
+            if widgets::secondary_button(ui, label).clicked() {
+                (self.voice_toggle)();
+            }
+        });
+        ui.add_space(theme::SPACE_1);
+        ui.label(
+            RichText::new(status)
+                .size(theme::TEXT_CAPTION)
+                .color(theme::TEXT_SECONDARY),
+        );
     }
 
     /// Компактная таблица последних сессий.
@@ -1208,6 +1271,15 @@ impl SettingsApp {
             Some("После точки"),
             |ui| widgets::switch(ui, caps),
         );
+        widgets::row_separator(ui);
+
+        let paste_long = &mut voice.paste_long_text;
+        widgets::setting_row(
+            ui,
+            "Длинный текст через буфер",
+            Some("Фраза вставляется одним Ctrl+V — быстрее и без ряби в окне"),
+            |ui| widgets::switch(ui, paste_long),
+        );
 
         ui.add_space(theme::SPACE_4);
         ui.label(
@@ -1228,28 +1300,7 @@ impl SettingsApp {
         );
 
         ui.add_space(theme::SPACE_4);
-        ui.horizontal(|ui| {
-            let (text, kind) = if active {
-                ("диктовка активна", widgets::BadgeKind::Ok)
-            } else {
-                ("диктовка выключена", widgets::BadgeKind::Info)
-            };
-            widgets::badge(ui, text, kind);
-            let label = if active {
-                "Выключить"
-            } else {
-                "Включить"
-            };
-            if widgets::secondary_button(ui, label).clicked() {
-                (self.voice_toggle)();
-            }
-        });
-        ui.add_space(theme::SPACE_1);
-        ui.label(
-            RichText::new(status)
-                .size(theme::TEXT_CAPTION)
-                .color(theme::TEXT_SECONDARY),
-        );
+        self.draw_voice_state(ui, active, &status);
 
         ui.add_space(theme::SPACE_4);
         ui.label(

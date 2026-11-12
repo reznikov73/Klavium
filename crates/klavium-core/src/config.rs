@@ -268,6 +268,10 @@ impl Default for CorrectionConfig {
 }
 
 /// Голосовой ввод (реализация — фаза Ф8).
+///
+/// Флагов больше трёх осознанно: это плоский конфиг для JSON, группировать
+/// его в подобъекты ради линта не стоит.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VoiceConfig {
@@ -286,6 +290,8 @@ pub struct VoiceConfig {
     pub auto_capitalize: bool,
     /// Путь к модели Vosk.
     pub vosk_model_path: String,
+    /// Вставлять длинные фразы через буфер обмена (Ctrl+V), а не посимвольно.
+    pub paste_long_text: bool,
 }
 
 impl Default for VoiceConfig {
@@ -298,6 +304,7 @@ impl Default for VoiceConfig {
             punct_dict: true,
             auto_capitalize: true,
             vosk_model_path: String::new(),
+            paste_long_text: true,
         }
     }
 }
@@ -341,8 +348,29 @@ pub struct AppConfig {
     pub correction: CorrectionConfig,
     /// Голос.
     pub voice: VoiceConfig,
+    /// Темп печати.
+    pub typing: TypingConfig,
     /// Логирование.
     pub logging: LoggingConfig,
+}
+
+/// Темп печати исправлений и голосовой вставки.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TypingConfig {
+    /// Темп печати исправлений: `careful` / `fast` / `instant`.
+    pub speed_correction: String,
+    /// Темп голосовой вставки: `careful` / `fast` / `instant`.
+    pub speed_voice: String,
+}
+
+impl Default for TypingConfig {
+    fn default() -> Self {
+        Self {
+            speed_correction: "careful".to_string(),
+            speed_voice: "careful".to_string(),
+        }
+    }
 }
 
 #[cfg(test)]

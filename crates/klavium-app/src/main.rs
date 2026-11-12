@@ -71,6 +71,7 @@ fn request_ui_open(ui_tx: &std::sync::mpsc::Sender<()>) {
     }
 }
 
+#[allow(clippy::too_many_lines)] // последовательность сервисов читается сверху вниз
 fn main() -> anyhow::Result<()> {
     let Some(_guard) = instance::check_single_instance()? else {
         // Второй запуск: просим работающий экземпляр показать окно настроек
@@ -89,6 +90,7 @@ fn main() -> anyhow::Result<()> {
     log_hotkeys(&config);
 
     sync_autostart(&config);
+    real_io::apply_typing_speed(&config);
 
     let shared: SharedConfig = Arc::new(RwLock::new(config.clone()));
     // Разобранные хоткеи: хук читает готовые сочетания, без разбора строк.
@@ -369,6 +371,7 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 CompiledHotkeys::from_config(&new_config);
             sync_autostart(&new_config);
+            real_io::apply_typing_speed(&new_config);
             voice_reload.reload(); // движок перечитает настройки на лету
             tracing::info!(target: "klavium", "настройки сохранены");
             Ok(())

@@ -73,11 +73,22 @@ pub trait EngineIo: Send + Sync {
     fn send_voice_text(&self, text: &str) {
         self.send_text(text);
     }
+    /// Вставить текст через буфер обмена (быстрый путь для длинных фраз).
+    ///
+    /// По умолчанию не поддерживается — движок вставляет посимвольно.
+    /// `true` — вставка выполнена.
+    fn paste_text(&self, _text: &str) -> bool {
+        false
+    }
     /// Текущее состояние модификаторов.
     fn modifiers(&self) -> Modifiers;
 }
 
 /// Настройки движка.
+/// Настройки движка.
+///
+/// Флагов больше трёх осознанно: это плоская конфигурация горячего пути.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Коррекция включена.
@@ -88,6 +99,10 @@ pub struct EngineConfig {
     pub threshold: f64,
     /// Хоткей ручного исправления (по умолчанию `F8`).
     pub hotkey_correct: Option<klavium_core::hotkeys::Hotkey>,
+    /// Сколько символов во фразе, начиная с которого вставляем через буфер.
+    pub paste_threshold: usize,
+    /// Вставлять длинные фразы через буфер (из настроек).
+    pub paste_long_text: bool,
     /// Пауза между словами одного набора (по умолчанию 5 с).
     pub word_timeout: Duration,
     /// Выполнять задания синхронно (используется тестами).
@@ -101,6 +116,8 @@ impl Default for EngineConfig {
             auto_correct: false,
             threshold: 0.7,
             hotkey_correct: klavium_core::hotkeys::Hotkey::parse("F8").ok(),
+            paste_threshold: 40,
+            paste_long_text: true,
             word_timeout: Duration::from_secs(5),
             run_jobs_inline: false,
         }
@@ -784,7 +801,14 @@ impl CorrectionEngine {
         let target = self.io.capture_target();
         let _guard = SuppressGuard::new(&self.suppress);
         let _ = self.io.restore_target(&target);
-        self.io.send_voice_text(text);
+        let config = self.config();
+        // Длинную фразу вставляем одним Ctrl+V — если буфер доступен и включён.
+        let pasted = config.paste_long_text
+            && text.chars().count() > config.paste_threshold
+            && self.io.paste_text(text);
+        if !pasted {
+            self.io.send_voice_text(text);
+        }
         self.track_typed_text(text);
     }
 

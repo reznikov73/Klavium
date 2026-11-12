@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-    VIRTUAL_KEY, VK_BACK, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RETURN,
-    VK_RMENU, VK_RSHIFT, VK_RWIN, VK_TAB,
+    VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL,
+    VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_TAB, VK_V,
 };
 
 use crate::hook::{is_key_pressed, INJECT_EXTRA_INFO};
@@ -163,6 +163,43 @@ pub fn send_backspaces(count: u32, delay: Duration) -> anyhow::Result<()> {
     for _ in 0..count {
         press_key(VK_BACK)?;
         sleep(delay);
+    }
+    Ok(())
+}
+
+/// Вставить текст через буфер обмена (`Ctrl+V`).
+///
+/// Быстрый путь для длинных фраз: вместо посимвольного ввода — один `Ctrl+V`.
+/// Буфер восстанавливается только если там всё ещё наш текст: если
+/// пользователь успел скопировать своё, чужое содержимое не затирается.
+///
+/// # Errors
+///
+/// Ошибка буфера обмена или `SendInput` — вызывающий делает фолбэк
+/// на посимвольный ввод.
+pub fn paste_text(text: &str) -> anyhow::Result<()> {
+    let mut clipboard = arboard::Clipboard::new()?;
+    let previous = clipboard.get_text().ok();
+    clipboard.set_text(text)?;
+
+    release_modifiers();
+    send_key_down(VK_CONTROL)?;
+    sleep(Duration::from_millis(20));
+    press_key(VK_V)?;
+    sleep(Duration::from_millis(20));
+    send_key_up(VK_CONTROL)?;
+    sleep(Duration::from_millis(120));
+
+    // Не затираем то, что пользователь успел скопировать за эти 120 мс.
+    if clipboard.get_text().ok().as_deref() == Some(text) {
+        match previous {
+            Some(previous) => {
+                let _ = clipboard.set_text(previous);
+            }
+            None => {
+                let _ = clipboard.clear();
+            }
+        }
     }
     Ok(())
 }
