@@ -253,8 +253,10 @@ struct SettingsApp {
     started: Instant,
     /// Иконка приложения в шапке сайдбара.
     icon: egui::TextureHandle,
-    /// Момент постановки статуса в нижней панели (для автоскрытия).
+    /// Статус в нижней панели (момент показа — для автоскрытия).
     status_at: Option<Instant>,
+    /// Момент первого клика по «Сбросить статистику» (подтверждение).
+    reset_armed: Option<Instant>,
 }
 
 impl SettingsApp {
@@ -302,6 +304,7 @@ impl SettingsApp {
             started: Instant::now(),
             icon,
             status_at: None,
+            reset_armed: None,
         }
     }
 
@@ -597,50 +600,49 @@ impl SettingsApp {
     fn draw_hotkeys(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
         let mut start_capture = None;
         let mut stop_capture = false;
-        for field in HotkeyField::ALL {
+        let mut clear_field = None;
+        let mut default_field = None;
+
+        for (index, field) in HotkeyField::ALL.into_iter().enumerate() {
             let spec = field.spec(&self.config).to_string();
             let capturing = self.capture == Some(field);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(field.title()).strong());
-                let label = if capturing {
-                    "Нажмите сочетание…".to_string()
-                } else {
-                    hotkey_label(spec.as_str())
-                };
-                if ui
-                    .add_sized([190.0, 24.0], egui::Button::new(label))
-                    .clicked()
-                {
-                    start_capture = Some(field);
-                }
-                if ui.small_button("Очистить").clicked() {
-                    field.spec_mut(&mut self.config).clear();
-                    self.cancel_capture();
-                }
-                if ui.small_button("По умолчанию").clicked() {
-                    *field.spec_mut(&mut self.config) = field.default_spec().to_string();
-                    self.cancel_capture();
-                }
-            });
+            let (start, clear, reset) = Self::hotkey_row(ui, field, spec.as_str(), capturing);
+
+            if start {
+                start_capture = Some(field);
+            }
+            if clear {
+                clear_field = Some(field);
+            }
+            if reset {
+                default_field = Some(field);
+            }
 
             draw_hotkey_state(ui, spec.as_str(), capturing, &mut stop_capture);
-
-            ui.label(RichText::new(field.hint()).small().weak());
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(6.0);
+            if index + 1 < HotkeyField::ALL.len() {
+                widgets::row_separator(ui);
+            }
         }
 
         let conflicts = hotkey_conflicts(&self.config);
         if !conflicts.is_empty() {
-            ui.colored_label(
-                Color32::from_rgb(235, 87, 87),
-                format!("Одинаковые сочетания: {}", conflicts.join("; ")),
+            ui.add_space(theme::SPACE_2);
+            widgets::badge(
+                ui,
+                &format!("Одинаковые сочетания: {}", conflicts.join("; ")),
+                widgets::BadgeKind::Error,
             );
-            ui.add_space(6.0);
         }
 
         if stop_capture {
+            self.cancel_capture();
+        }
+        if let Some(field) = clear_field {
+            field.spec_mut(&mut self.config).clear();
+            self.cancel_capture();
+        }
+        if let Some(field) = default_field {
+            *field.spec_mut(&mut self.config) = field.default_spec().to_string();
             self.cancel_capture();
         }
         if let Some(field) = start_capture {
@@ -648,26 +650,91 @@ impl SettingsApp {
         }
         self.handle_capture(ctx);
 
-        ui.add_space(6.0);
-        ui.separator();
-        ui.add_space(6.0);
-        ui.label(RichText::new("Ввести вручную").strong());
+        self.draw_manual_hotkeys(ui);
+    }
+
+    /// Поля ручного ввода сочетаний (когда клавишу не удаётся поймать).
+    fn draw_manual_hotkeys(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(theme::SPACE_3);
+        ui.label(
+            RichText::new("Ввести вручную")
+                .size(theme::TEXT_CARD_TITLE)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
+        ui.add_space(theme::SPACE_1);
         ui.label(
             RichText::new(
                 "Формат: Ctrl+Pause, Ctrl+Shift+Q, F8, Space. Пустое поле — клавиша не назначена.",
             )
-            .small()
-            .weak(),
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_SECONDARY),
         );
+        ui.add_space(theme::SPACE_2);
         for field in HotkeyField::ALL {
             ui.horizontal(|ui| {
-                ui.label(field.title());
+                ui.label(RichText::new(field.title()).size(theme::TEXT_BODY));
                 ui.add(
                     egui::TextEdit::singleline(field.spec_mut(&mut self.config))
                         .desired_width(190.0),
                 );
             });
         }
+    }
+
+    /// Строка хоткея: название с подсказкой, кейкап сочетания и текстовые кнопки.
+    ///
+    /// Возвращает `(начать захват, очистить, по умолчанию)`.
+    fn hotkey_row(
+        ui: &mut egui::Ui,
+        field: HotkeyField,
+        spec: &str,
+        capturing: bool,
+    ) -> (bool, bool, bool) {
+        let mut start = false;
+        let mut clear = false;
+        let mut reset = false;
+
+        widgets::setting_row(ui, field.title(), Some(field.hint()), |ui| {
+            // Справа налево: «По умолчанию», «Очистить», кейкап сочетания.
+            if widgets::link_button(ui, "По умолчанию").clicked() {
+                reset = true;
+            }
+            if widgets::link_button(ui, "Очистить").clicked() {
+                clear = true;
+            }
+            let label = if capturing {
+                "Нажмите сочетание…".to_string()
+            } else {
+                hotkey_label(spec)
+            };
+            let stroke = if capturing {
+                Stroke::new(1.5_f32, theme::ACCENT)
+            } else {
+                Stroke::new(theme::HAIRLINE, theme::BORDER_STRONG)
+            };
+            let button = egui::Button::new(
+                RichText::new(label)
+                    .monospace()
+                    .size(theme::TEXT_MONO)
+                    .color(if capturing {
+                        theme::ACCENT
+                    } else {
+                        theme::TEXT_PRIMARY
+                    }),
+            )
+            .fill(theme::BG_CARD)
+            .stroke(stroke)
+            .corner_radius(egui::CornerRadius::same(theme::RADIUS_KEYCAP))
+            .min_size(egui::vec2(170.0, 26.0));
+            let response = ui.add(button);
+            if response.clicked() {
+                start = true;
+            }
+            response
+        });
+
+        (start, clear, reset)
     }
 
     /// Поймать следующее нажатие для выбранного действия.
@@ -751,10 +818,11 @@ impl SettingsApp {
                 "У каждого звука: тумблер, число сигналов, пауза между ними, частота и длительность. \
                  «Прослушать» играет с текущими значениями — можно до «Сохранить».",
             )
-            .small()
-            .weak(),
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_SECONDARY),
         );
-        ui.add_space(8.0);
+        ui.add_space(theme::SPACE_3);
+
         let preview = self.sound_preview.as_ref();
         let sounds = &mut self.config.sounds;
         let rows: [(&str, &mut SoundSpec); 5] = [
@@ -764,13 +832,11 @@ impl SettingsApp {
             ("Старт голоса", &mut sounds.voice_start),
             ("Стоп голоса", &mut sounds.voice_stop),
         ];
-        for (title, spec) in rows {
+
+        for (index, (title, spec)) in rows.into_iter().enumerate() {
+            let enabled = &mut spec.enabled;
+            widgets::setting_row(ui, title, None, |ui| widgets::switch(ui, enabled));
             ui.horizontal(|ui| {
-                toggle_switch(ui, &mut spec.enabled);
-                ui.label(RichText::new(title).strong());
-            });
-            ui.horizontal(|ui| {
-                ui.add_space(26.0);
                 ui.add(
                     egui::DragValue::new(&mut spec.count)
                         .range(1..=10)
@@ -796,113 +862,281 @@ impl SettingsApp {
                         .suffix(" мс"),
                 )
                 .on_hover_text("Длительность одного сигнала");
-                if ui.button("🔊 Прослушать").clicked() {
+                if widgets::secondary_button(ui, "Прослушать").clicked() {
                     preview(spec.clone());
                 }
             });
-            ui.add_space(10.0);
+            if index + 1 < 5 {
+                widgets::row_separator(ui);
+            }
         }
     }
 
     fn draw_timeouts(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Пауза между словами (сек):");
-            ui.add(
-                egui::DragValue::new(&mut self.config.timeouts.word_start)
-                    .range(0.5..=60.0)
-                    .speed(0.1),
-            );
-        });
-        ui.horizontal(|ui| {
-            ui.label("Интервал проверки раскладки (сек):");
-            ui.add(
-                egui::DragValue::new(&mut self.config.timeouts.layout_check)
-                    .range(0.1..=10.0)
-                    .speed(0.1),
-            );
-        });
+        let word_start = &mut self.config.timeouts.word_start;
+        widgets::setting_row(
+            ui,
+            "Пауза между словами",
+            Some("После такой паузы новое слово считается отдельным"),
+            |ui| {
+                ui.label(
+                    RichText::new(format!("{word_start:.1} с"))
+                        .size(theme::TEXT_BODY)
+                        .strong()
+                        .color(theme::TEXT_PRIMARY),
+                );
+                ui.add(
+                    egui::Slider::new(word_start, 0.5..=60.0)
+                        .show_value(false)
+                        .trailing_fill(true),
+                )
+            },
+        );
+        widgets::row_separator(ui);
+        let layout_check = &mut self.config.timeouts.layout_check;
+        widgets::setting_row(
+            ui,
+            "Интервал проверки раскладки",
+            Some("Как часто сверяется раскладка активного окна"),
+            |ui| {
+                ui.label(
+                    RichText::new(format!("{layout_check:.1} с"))
+                        .size(theme::TEXT_BODY)
+                        .strong()
+                        .color(theme::TEXT_PRIMARY),
+                );
+                ui.add(
+                    egui::Slider::new(layout_check, 0.1..=10.0)
+                        .show_value(false)
+                        .trailing_fill(true),
+                )
+            },
+        );
     }
 
     fn draw_notifications(&mut self, ui: &mut egui::Ui) {
-        let notifications = &mut self.config.notifications;
-        ui.checkbox(&mut notifications.enabled, "Показывать уведомления");
+        let enabled = &mut self.config.notifications.enabled;
+        widgets::setting_row(
+            ui,
+            "Показывать уведомления",
+            Some("Тост о смене раскладки вверху экрана"),
+            |ui| widgets::switch(ui, enabled),
+        );
+        widgets::row_separator(ui);
+        let duration = &mut self.config.notifications.duration_ms;
+        widgets::setting_row(ui, "Длительность", None, |ui| {
+            ui.label(
+                RichText::new(format!("{duration} мс"))
+                    .size(theme::TEXT_BODY)
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
+            );
+            ui.add(
+                egui::Slider::new(duration, 500..=10000)
+                    .show_value(false)
+                    .trailing_fill(true),
+            )
+        });
+        ui.add_space(theme::SPACE_3);
         ui.horizontal(|ui| {
-            ui.label("Длительность (мс):");
-            ui.add(egui::DragValue::new(&mut notifications.duration_ms).range(500..=10000));
+            ui.label(
+                RichText::new("Превью")
+                    .size(theme::TEXT_CAPTION)
+                    .color(theme::TEXT_SECONDARY),
+            );
+            widgets::color_pill(ui, "ENGLISH", theme::ACCENT);
+            widgets::color_pill(ui, "РУССКИЙ", theme::DANGER);
         });
     }
 
     fn draw_statistics(&mut self, ui: &mut egui::Ui) {
-        let statistics = &mut self.config.statistics;
-        ui.checkbox(&mut statistics.enabled, "Вести статистику");
-        ui.checkbox(
-            &mut statistics.reset_on_start,
-            "Сбрасывать статистику при запуске",
+        let enabled = &mut self.config.statistics.enabled;
+        widgets::setting_row(
+            ui,
+            "Вести статистику",
+            Some("Слова, переключения раскладки и сессии"),
+            |ui| widgets::switch(ui, enabled),
         );
-        ui.add_space(10.0);
-        ui.separator();
-        ui.add_space(8.0);
+        widgets::row_separator(ui);
+        let reset_on_start = &mut self.config.statistics.reset_on_start;
+        widgets::setting_row(
+            ui,
+            "Сбрасывать при запуске",
+            None,
+            |ui| widgets::switch(ui, reset_on_start),
+        );
 
+        ui.add_space(theme::SPACE_4);
         let snapshot = (self.stats_snapshot)();
-        ui.label(RichText::new("Слова по раскладкам (за всё время):").strong());
-        ui.add_space(4.0);
-        ui.label(format!("Английских: {}", snapshot.total_words.en));
-        ui.label(format!("Русских: {}", snapshot.total_words.ru));
-        ui.label(format!("Прочих: {}", snapshot.total_words.other));
-        ui.label(format!("Голосом: {}", snapshot.total_words.voice));
-        ui.add_space(6.0);
-        ui.label(format!(
-            "Переключений раскладки: {}",
-            snapshot.layout_switches
-        ));
-        ui.label(format!("Сессий в истории: {}", snapshot.sessions.len()));
-        ui.add_space(10.0);
-        if ui.button("Сбросить статистику").clicked() {
-            (self.stats_reset)();
+        egui::Grid::new("stats_metrics")
+            .num_columns(3)
+            .min_col_width(150.0)
+            .spacing([theme::SPACE_3, theme::SPACE_3])
+            .show(ui, |ui| {
+                widgets::metric_card(ui, "Слова EN", &snapshot.total_words.en.to_string(), None);
+                widgets::metric_card(ui, "Слова RU", &snapshot.total_words.ru.to_string(), None);
+                widgets::metric_card(ui, "Голосом", &snapshot.total_words.voice.to_string(), None);
+                ui.end_row();
+                widgets::metric_card(
+                    ui,
+                    "Переключения",
+                    &snapshot.layout_switches.to_string(),
+                    None,
+                );
+                widgets::metric_card(
+                    ui,
+                    "Прочие слова",
+                    &snapshot.total_words.other.to_string(),
+                    None,
+                );
+                widgets::metric_card(ui, "Сессий", &snapshot.sessions.len().to_string(), None);
+                ui.end_row();
+            });
+
+        ui.add_space(theme::SPACE_4);
+        Self::draw_sessions(ui, &snapshot);
+
+        ui.add_space(theme::SPACE_4);
+        let armed = self
+            .reset_armed
+            .is_some_and(|at| at.elapsed() < Duration::from_secs(3));
+        let label = if armed {
+            "Точно сбросить?"
+        } else {
+            "Сбросить статистику"
+        };
+        let button = egui::Button::new(
+            RichText::new(label)
+                .size(theme::TEXT_BODY)
+                .color(theme::DANGER),
+        )
+        .fill(Color32::TRANSPARENT)
+        .stroke(Stroke::new(theme::HAIRLINE, theme::DANGER))
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS_CONTROL))
+        .min_size(egui::vec2(0.0, 30.0));
+        if ui.add(button).clicked() {
+            if armed {
+                (self.stats_reset)();
+                self.reset_armed = None;
+                self.set_status("Статистика сброшена".to_string(), false);
+            } else {
+                self.reset_armed = Some(Instant::now());
+            }
         }
     }
 
-    fn draw_general(&mut self, ui: &mut egui::Ui) {
-        ui.checkbox(
-            &mut self.config.autostart.enabled,
-            "Запускать вместе с Windows",
+    /// Компактная таблица последних сессий.
+    fn draw_sessions(ui: &mut egui::Ui, snapshot: &StatsData) {
+        ui.label(
+            RichText::new("История сессий")
+                .size(theme::TEXT_CARD_TITLE)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
         );
-        ui.add_space(12.0);
-        ui.label(RichText::new("Логирование").strong());
-        let logging = &mut self.config.logging;
-        ui.checkbox(&mut logging.enabled, "Вести журнал");
-        ui.horizontal(|ui| {
-            ui.label("Уровень:");
-            egui::ComboBox::from_id_salt("log_level")
-                .selected_text(logging.level.clone())
-                .show_ui(ui, |ui| {
-                    for level in ["DEBUG", "INFO", "WARNING", "ERROR"] {
-                        ui.selectable_value(&mut logging.level, level.to_string(), level);
-                    }
-                });
+        ui.add_space(theme::SPACE_2);
+        if snapshot.sessions.is_empty() {
+            ui.label(
+                RichText::new("Пока нет данных")
+                    .size(theme::TEXT_CAPTION)
+                    .color(theme::TEXT_SECONDARY),
+            );
+            return;
+        }
+        egui::Grid::new("stats_sessions")
+            .num_columns(3)
+            .spacing([theme::SPACE_4, theme::SPACE_1])
+            .show(ui, |ui| {
+                for session in snapshot.sessions.iter().rev().take(8) {
+                    let words = session.words.en
+                        + session.words.ru
+                        + session.words.other
+                        + session.words.voice;
+                    ui.label(
+                        RichText::new(human_ago(session.started_at))
+                            .monospace()
+                            .size(theme::TEXT_MONO)
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                    ui.label(
+                        RichText::new(format!("{} мин", session.duration_s / 60))
+                            .monospace()
+                            .size(theme::TEXT_MONO)
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                    ui.label(
+                        RichText::new(format!("{words} сл."))
+                            .monospace()
+                            .size(theme::TEXT_MONO)
+                            .color(theme::TEXT_PRIMARY),
+                    );
+                    ui.end_row();
+                }
+            });
+    }
+
+    fn draw_general(&mut self, ui: &mut egui::Ui) {
+        let autostart = &mut self.config.autostart.enabled;
+        widgets::setting_row(
+            ui,
+            "Запускать вместе с Windows",
+            Some("Автозапуск в трее, без окна"),
+            |ui| widgets::switch(ui, autostart),
+        );
+        widgets::row_separator(ui);
+
+        let logging_enabled = &mut self.config.logging.enabled;
+        widgets::setting_row(
+            ui,
+            "Вести журнал",
+            Some("Файл logs\\app.log в каталоге данных"),
+            |ui| widgets::switch(ui, logging_enabled),
+        );
+        widgets::row_separator(ui);
+
+        let level = &mut self.config.logging.level;
+        widgets::setting_row(ui, "Уровень журнала", None, |ui| {
+            widgets::segmented(
+                ui,
+                &[
+                    ("ERROR", "Ошибки"),
+                    ("WARNING", "Предупр."),
+                    ("INFO", "Инфо"),
+                    ("DEBUG", "Отладка"),
+                ],
+                level,
+            )
         });
-        ui.add_space(12.0);
-        ui.label(RichText::new("Каталог данных").strong());
+
+        ui.add_space(theme::SPACE_4);
+        ui.label(
+            RichText::new("Каталог данных")
+                .size(theme::TEXT_CARD_TITLE)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
+        ui.add_space(theme::SPACE_1);
         ui.label(
             RichText::new(
-                "Здесь хранятся настройки, статистика, журналы и модели. По умолчанию — папка data рядом с программой.",
+                "Здесь хранятся настройки, статистика, журналы и модели. \
+                 По умолчанию — папка data рядом с программой.",
             )
-            .small()
-            .weak(),
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_SECONDARY),
         );
+        ui.add_space(theme::SPACE_2);
         ui.label(
             RichText::new(self.data_dir.display().to_string())
                 .monospace()
-                .small(),
+                .size(theme::TEXT_MONO)
+                .color(theme::TEXT_PRIMARY),
         );
         if let Some(note) = &self.data_note {
-            ui.colored_label(
-                Color32::from_rgb(230, 180, 80),
-                RichText::new(note.as_str()),
-            );
+            ui.add_space(theme::SPACE_1);
+            widgets::badge(ui, note, widgets::BadgeKind::Warn);
         }
+        ui.add_space(theme::SPACE_2);
         ui.horizontal(|ui| {
-            if ui.button("Выбрать папку…").clicked() {
+            if widgets::secondary_button(ui, "Выбрать папку…").clicked() {
                 if let Some(dir) = rfd::FileDialog::new()
                     .set_directory(&self.data_dir)
                     .pick_folder()
@@ -910,17 +1144,18 @@ impl SettingsApp {
                     (self.data_dir_change)(Some(dir));
                 }
             }
-            if ui.button("По умолчанию (рядом с программой)").clicked() {
+            if widgets::secondary_button(ui, "По умолчанию").clicked() {
                 (self.data_dir_change)(None);
             }
-            if ui.button("Открыть").clicked() {
+            if widgets::secondary_button(ui, "Открыть").clicked() {
                 let _ = std::process::Command::new("explorer")
                     .arg(&self.data_dir)
                     .spawn();
             }
         });
         if let Some(status) = (self.data_move_status)() {
-            ui.colored_label(Color32::from_rgb(230, 180, 80), RichText::new(status));
+            ui.add_space(theme::SPACE_1);
+            widgets::badge(ui, &status, widgets::BadgeKind::Warn);
         }
     }
 
@@ -1176,9 +1411,19 @@ fn egui_key_token(key: egui::Key) -> &'static str {
     }
 }
 
-/// Тумблер вкл/выкл в стиле переключателя (тонкая обёртка над [`widgets::switch`]).
-fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
-    widgets::switch(ui, on)
+/// Сколько времени назад была сессия (без часовых поясов — только разница).
+fn human_ago(started_at: u64) -> String {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let diff = now.saturating_sub(started_at);
+    if diff < 3600 {
+        format!("{} мин назад", diff / 60)
+    } else if diff < 86_400 {
+        format!("{} ч назад", diff / 3600)
+    } else {
+        format!("{} дн назад", diff / 86_400)
+    }
 }
 
 /// Поднять и сфокусировать уже открытое окно настроек (клик «Настройки»

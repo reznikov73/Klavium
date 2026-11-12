@@ -104,22 +104,31 @@ pub fn setting_row(
 ) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(
-                RichText::new(label)
-                    .size(theme::TEXT_BODY)
-                    .color(theme::TEXT_PRIMARY),
-            );
-            if let Some(hint) = hint {
-                ui.label(
-                    RichText::new(hint)
-                        .size(theme::TEXT_CAPTION)
-                        .color(theme::TEXT_SECONDARY),
-                );
-            }
-        });
+        // Сначала управление справа: оно резервирует своё место, а текст
+        // занимает остаток ширины и переносится по словам (иначе подсказка
+        // уезжает под кнопку).
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             changed = add(ui).changed();
+            ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                ui.add(
+                    egui::Label::new(
+                        RichText::new(label)
+                            .size(theme::TEXT_BODY)
+                            .color(theme::TEXT_PRIMARY),
+                    )
+                    .wrap(),
+                );
+                if let Some(hint) = hint {
+                    ui.add(
+                        egui::Label::new(
+                            RichText::new(hint)
+                                .size(theme::TEXT_CAPTION)
+                                .color(theme::TEXT_SECONDARY),
+                        )
+                        .wrap(),
+                    );
+                }
+            });
         });
     });
     changed
@@ -225,9 +234,9 @@ pub fn progress(ui: &mut Ui, fraction: f32) {
 ///
 /// `options` — пары (значение, подпись); выбранное значение пишется в
 /// `current`. Возвращает `true`, если выбор изменился.
-pub fn segmented(ui: &mut Ui, options: &[(&str, &str)], current: &mut String) -> bool {
+pub fn segmented(ui: &mut Ui, options: &[(&str, &str)], current: &mut String) -> Response {
     let mut changed = false;
-    egui::Frame::NONE
+    let mut inner = egui::Frame::NONE
         .fill(theme::TRACK)
         .corner_radius(egui::CornerRadius::same(theme::RADIUS_CONTROL))
         .inner_margin(egui::Margin::same(3))
@@ -263,29 +272,82 @@ pub fn segmented(ui: &mut Ui, options: &[(&str, &str)], current: &mut String) ->
                 }
             });
         });
-    changed
+    if changed {
+        inner.response.mark_changed();
+    }
+    inner.response
+}
+
+/// Вторичная кнопка: прозрачный фон, обводка.
+pub fn secondary_button(ui: &mut Ui, text: &str) -> Response {
+    ui.add(
+        egui::Button::new(
+            RichText::new(text)
+                .size(theme::TEXT_BODY)
+                .color(theme::TEXT_PRIMARY),
+        )
+        .fill(Color32::TRANSPARENT)
+        .stroke(Stroke::new(theme::HAIRLINE, theme::BORDER_STRONG))
+        .corner_radius(egui::CornerRadius::same(theme::RADIUS_CONTROL))
+        .min_size(egui::vec2(0.0, theme::BUTTON_HEIGHT)),
+    )
+}
+
+/// Текстовая кнопка-ссылка (без фона и обводки).
+pub fn link_button(ui: &mut Ui, text: &str) -> Response {
+    ui.add(
+        egui::Button::new(
+            RichText::new(text)
+                .size(theme::TEXT_CAPTION)
+                .color(theme::TEXT_SECONDARY),
+        )
+        .fill(Color32::TRANSPARENT)
+        .stroke(Stroke::NONE),
+    )
+}
+
+/// Цветная пилюля с белым текстом (превью тостов раскладки).
+pub fn color_pill(ui: &mut Ui, text: &str, color: Color32) {
+    egui::Frame::NONE
+        .fill(color)
+        .corner_radius(egui::CornerRadius::same(11))
+        .inner_margin(egui::Margin::symmetric(10, 3))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new(text)
+                    .size(theme::TEXT_CAPTION)
+                    .strong()
+                    .color(Color32::WHITE),
+            );
+        });
 }
 
 /// Карточка метрики для раздела «Статистика».
 pub fn metric_card(ui: &mut Ui, label: &str, value: &str, hint: Option<&str>) {
     card(ui, |ui| {
-        ui.label(
-            RichText::new(value)
-                .size(theme::TEXT_METRIC)
-                .strong()
-                .color(theme::TEXT_PRIMARY),
-        );
-        ui.label(
-            RichText::new(label)
-                .size(theme::TEXT_CAPTION)
-                .color(theme::TEXT_SECONDARY),
-        );
-        if let Some(hint) = hint {
+        // Ширина фиксирована, иначе в ячейке сетки карточка сжимается по тексту.
+        ui.set_min_width(132.0);
+        // Явная вертикаль: карточка может оказаться в ячейке сетки,
+        // где раскладка горизонтальная.
+        ui.vertical(|ui| {
             ui.label(
-                RichText::new(hint)
-                    .size(theme::TEXT_CAPTION)
-                    .color(theme::TEXT_DISABLED),
+                RichText::new(value)
+                    .size(theme::TEXT_METRIC)
+                    .strong()
+                    .color(theme::TEXT_PRIMARY),
             );
-        }
+            ui.label(
+                RichText::new(label)
+                    .size(theme::TEXT_CAPTION)
+                    .color(theme::TEXT_SECONDARY),
+            );
+            if let Some(hint) = hint {
+                ui.label(
+                    RichText::new(hint)
+                        .size(theme::TEXT_CAPTION)
+                        .color(theme::TEXT_DISABLED),
+                );
+            }
+        });
     });
 }
