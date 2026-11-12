@@ -9,11 +9,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use egui::{Color32, RichText};
+use egui::{Color32, RichText, Stroke};
 use klavium_core::config::{AppConfig, SoundSpec};
 use klavium_core::hotkeys::Hotkey;
 use klavium_core::stats::StatsData;
 use klavium_core::voice::{DownloadStatus, RecognitionTest, MODELS};
+
+use crate::{theme, widgets};
 
 /// Колбэк сохранения: приложение пишет файл и применяет изменения на лету.
 pub type SaveHandler = Box<dyn Fn(AppConfig) -> Result<(), String> + 'static>;
@@ -154,6 +156,71 @@ fn initial_section() -> Section {
     }
 }
 
+/// Заголовок и пояснение страницы раздела.
+const fn section_header(section: Section) -> (&'static str, &'static str) {
+    match section {
+        Section::Correction => (
+            "Коррекция раскладки",
+            "Автоматически заменяет слово, набранное в неверной раскладке.\nКлавиши меняются в разделе «Горячие клавиши».",
+        ),
+        Section::Hotkeys => (
+            "Горячие клавиши",
+            "Нажмите кнопку с текущим сочетанием и введите новое (Esc отменяет ввод).\nЕсли клавиша не ловится, впишите сочетание в поле ниже.",
+        ),
+        Section::Sounds => (
+            "Звуки",
+            "Сигналы при исправлении, смене раскладки и голосовом вводе.",
+        ),
+        Section::Timeouts => (
+            "Таймауты",
+            "Когда слово считается завершённым и как часто проверяется раскладка.",
+        ),
+        Section::Notifications => ("Уведомления", "Подсказка у каретки и её длительность."),
+        Section::Statistics => ("Статистика", "Сколько слов исправлено и когда вы работали."),
+        Section::General => ("Общие", "Каталог данных, автозапуск и журнал."),
+        Section::Voice => (
+            "Голосовой ввод",
+            "Движок распознавания, модели и тест микрофона.",
+        ),
+    }
+}
+
+/// Пункт бокового меню: подсветка выбранного и полоска акцента слева.
+fn menu_item(ui: &mut egui::Ui, title: &str, active: bool) -> bool {
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), theme::MENU_ROW_HEIGHT),
+        egui::Sense::click(),
+    );
+    let radius = egui::CornerRadius::same(theme::RADIUS_CONTROL);
+    if active {
+        ui.painter().rect_filled(rect, radius, theme::ACCENT_TINT);
+        let bar = egui::Rect::from_min_size(
+            egui::pos2(rect.left() + 4.0, rect.top() + 8.0),
+            egui::vec2(3.0, rect.height() - 16.0),
+        );
+        ui.painter()
+            .rect_filled(bar, egui::CornerRadius::same(2), theme::ACCENT);
+    } else if response.hovered() {
+        ui.painter()
+            .rect_filled(rect, radius, Color32::from_black_alpha(10));
+    }
+    let color = if active {
+        theme::ACCENT
+    } else {
+        theme::TEXT_PRIMARY
+    };
+    ui.painter().text(
+        egui::pos2(rect.left() + 16.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        title,
+        egui::FontId::proportional(theme::TEXT_BODY),
+        color,
+    );
+    response
+        .on_hover_cursor(egui::CursorIcon::PointingHand)
+        .clicked()
+}
+
 struct SettingsApp {
     config: AppConfig,
     original: AppConfig,
@@ -184,11 +251,26 @@ struct SettingsApp {
     voice_test_state: Box<dyn Fn() -> RecognitionTest + 'static>,
     smoke_seconds: Option<u64>,
     started: Instant,
+    /// Иконка приложения в шапке сайдбара.
+    icon: egui::TextureHandle,
+    /// Момент постановки статуса в нижней панели (для автоскрытия).
+    status_at: Option<Instant>,
 }
 
 impl SettingsApp {
     fn new(cc: &eframe::CreationContext<'_>, context: SettingsContext) -> Self {
         install_theme(&cc.egui_ctx);
+        let icon = cc.egui_ctx.load_texture(
+            "klavium_icon",
+            egui::ColorImage::from_rgba_unmultiplied(
+                [
+                    crate::tray::ICON_SIZE as usize,
+                    crate::tray::ICON_SIZE as usize,
+                ],
+                &crate::tray::neutral_icon_rgba(),
+            ),
+            egui::TextureOptions::LINEAR,
+        );
         Self {
             original: context.config.clone(),
             config: context.config,
@@ -218,6 +300,8 @@ impl SettingsApp {
             voice_test_state: context.voice_test_state,
             smoke_seconds: context.smoke_seconds,
             started: Instant::now(),
+            icon,
+            status_at: None,
         }
     }
 
@@ -226,12 +310,18 @@ impl SettingsApp {
         match (self.on_save)(self.config.clone()) {
             Ok(()) => {
                 self.original = self.config.clone();
-                self.status = Some(("Сохранено".to_string(), false));
+                self.set_status("Сохранено".to_string(), false);
             }
             Err(error) => {
-                self.status = Some((format!("Ошибка: {error}"), true));
+                self.set_status(format!("Ошибка: {error}"), true);
             }
         }
+    }
+
+    /// Поставить статус в нижнюю панель с автоскрытием.
+    fn set_status(&mut self, text: String, is_error: bool) {
+        self.status = Some((text, is_error));
+        self.status_at = Some(Instant::now());
     }
 
     /// Начать захват клавиши: глобальный хук на это время её не перехватывает.
@@ -255,144 +345,256 @@ impl SettingsApp {
     }
 
     fn draw(&mut self, ctx: &egui::Context) {
+        self.draw_sidebar(ctx);
+        self.draw_bottom_bar(ctx);
+        self.draw_content(ctx);
+    }
+
+    /// Боковое меню: шапка с иконкой и версией, разделы, ссылка на папку данных.
+    fn draw_sidebar(&mut self, ctx: &egui::Context) {
         egui::SidePanel::left("sections")
             .resizable(false)
-            .default_width(200.0)
+            .exact_width(theme::SIDEBAR_WIDTH)
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::BG_SIDEBAR)
+                    .stroke(Stroke::new(theme::HAIRLINE, theme::BORDER_SUBTLE))
+                    .inner_margin(egui::Margin::symmetric(12, 14)),
+            )
             .show(ctx, |ui| {
-                ui.add_space(12.0);
-                ui.heading("Klavium");
-                ui.label(RichText::new("исправление раскладки").small().weak());
-                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.add(egui::Image::new((self.icon.id(), egui::vec2(28.0, 28.0))));
+                    ui.vertical(|ui| {
+                        ui.label(
+                            RichText::new("Klavium")
+                                .size(15.0)
+                                .strong()
+                                .color(theme::TEXT_PRIMARY),
+                        );
+                        ui.label(
+                            RichText::new(format!(
+                                "исправление раскладки · v{}",
+                                env!("CARGO_PKG_VERSION")
+                            ))
+                            .size(theme::TEXT_CAPTION)
+                            .color(theme::TEXT_SECONDARY),
+                        );
+                    });
+                });
+                ui.add_space(theme::SPACE_4);
 
                 for (section, title) in SECTIONS {
-                    if ui
-                        .selectable_label(self.section == section, title)
-                        .clicked()
-                    {
+                    if menu_item(ui, title, self.section == section) {
                         self.section = section;
                     }
                 }
 
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    ui.add_space(6.0);
-                    if ui.button("Открыть папку данных").clicked() {
+                    ui.label(
+                        RichText::new(format!(
+                            "Выход: трей → «Выход» или {}",
+                            hotkey_label(&self.config.hotkeys.quit)
+                        ))
+                        .size(theme::TEXT_CAPTION)
+                        .color(theme::TEXT_SECONDARY),
+                    );
+                    ui.add_space(theme::SPACE_2);
+                    let link = egui::Button::new(
+                        RichText::new("Открыть папку данных")
+                            .size(theme::TEXT_BODY)
+                            .color(theme::TEXT_SECONDARY),
+                    )
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(Stroke::NONE);
+                    if ui.add(link).clicked() {
                         let _ = std::process::Command::new("explorer")
                             .arg(&self.data_dir)
                             .spawn();
                     }
                 });
             });
+    }
 
-        egui::TopBottomPanel::bottom("actions").show(ctx, |ui| {
-            ui.add_space(6.0);
-            ui.horizontal(|ui| {
-                if ui.button("Сохранить").clicked() {
-                    self.save();
-                }
-                if ui.button("Сбросить").clicked() {
-                    self.config = self.original.clone();
-                    self.status = Some(("Изменения сброшены".to_string(), false));
-                }
-                ui.add_space(12.0);
-                if let Some((text, is_error)) = &self.status {
-                    let color = if *is_error {
-                        Color32::from_rgb(235, 87, 87)
-                    } else {
-                        Color32::from_rgb(87, 200, 120)
-                    };
-                    ui.colored_label(color, text);
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Скрыть в трей").clicked() {
-                        // Закрываем окно по-настоящему: приложение остаётся в трее,
-                        // окно будет создано заново при следующем открытии.
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    /// Нижняя панель: сохранить/сбросить, статус, «Скрыть в трей».
+    fn draw_bottom_bar(&mut self, ctx: &egui::Context) {
+        let dirty = self.config != self.original;
+
+        egui::TopBottomPanel::bottom("actions")
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::BG_WINDOW)
+                    .stroke(Stroke::new(theme::HAIRLINE, theme::BORDER_SUBTLE))
+                    .inner_margin(egui::Margin::symmetric(20, 10)),
+            )
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let save = egui::Button::new(
+                        RichText::new("Сохранить")
+                            .size(theme::TEXT_BODY)
+                            .color(Color32::WHITE),
+                    )
+                    .fill(theme::ACCENT)
+                    .stroke(Stroke::NONE)
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS_CONTROL))
+                    .min_size(egui::vec2(96.0, theme::BUTTON_HEIGHT));
+                    if ui.add_enabled(dirty, save).clicked() {
+                        self.save();
                     }
-                    ui.label(
-                        RichText::new(format!(
-                            "Выход: трей → «Выход» или {}",
-                            hotkey_label(&self.config.hotkeys.quit)
-                        ))
-                        .small()
-                        .weak(),
-                    );
+
+                    let reset = egui::Button::new(
+                        RichText::new("Сбросить")
+                            .size(theme::TEXT_BODY)
+                            .color(theme::TEXT_PRIMARY),
+                    )
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(Stroke::new(theme::HAIRLINE, theme::BORDER_STRONG))
+                    .corner_radius(egui::CornerRadius::same(theme::RADIUS_CONTROL))
+                    .min_size(egui::vec2(88.0, theme::BUTTON_HEIGHT));
+                    if ui.add_enabled(dirty, reset).clicked() {
+                        self.config = self.original.clone();
+                        self.set_status("Изменения сброшены".to_string(), false);
+                    }
+
+                    ui.add_space(theme::SPACE_3);
+                    if let Some((text, is_error)) = &self.status {
+                        let color = if *is_error {
+                            theme::DANGER
+                        } else {
+                            theme::SUCCESS
+                        };
+                        ui.label(RichText::new(text).size(theme::TEXT_MONO).color(color));
+                    }
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let hide = egui::Button::new(
+                            RichText::new("Скрыть в трей")
+                                .size(theme::TEXT_BODY)
+                                .color(theme::TEXT_PRIMARY),
+                        )
+                        .fill(Color32::TRANSPARENT)
+                        .stroke(Stroke::new(theme::HAIRLINE, theme::BORDER_STRONG))
+                        .corner_radius(egui::CornerRadius::same(theme::RADIUS_CONTROL))
+                        .min_size(egui::vec2(0.0, theme::BUTTON_HEIGHT));
+                        if ui.add(hide).clicked() {
+                            // Закрываем окно по-настоящему: приложение остаётся в трее,
+                            // окно будет создано заново при следующем открытии.
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
                 });
             });
-            ui.add_space(6.0);
-        });
+    }
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.add_space(4.0);
-                // Захват клавиши живёт только в своей секции: иначе следующее
-                // нажатие в другом разделе молча переназначит хоткей.
-                if self.section != Section::Hotkeys {
-                    self.cancel_capture();
-                }
-                match self.section {
-                    Section::Correction => self.draw_correction(ui),
-                    Section::Hotkeys => self.draw_hotkeys(ui, ctx),
-                    Section::Sounds => self.draw_sounds(ui),
-                    Section::Timeouts => self.draw_timeouts(ui),
-                    Section::Notifications => self.draw_notifications(ui),
-                    Section::Statistics => self.draw_statistics(ui),
-                    Section::General => self.draw_general(ui),
-                    Section::Voice => self.draw_voice(ui),
-                }
+    /// Контентная область: заголовок раздела и карточка с настройками.
+    fn draw_content(&mut self, ctx: &egui::Context) {
+        egui::CentralPanel::default()
+            .frame(
+                egui::Frame::NONE
+                    .fill(theme::BG_WINDOW)
+                    .inner_margin(egui::Margin::symmetric(
+                        theme::CONTENT_PADDING_X,
+                        theme::CONTENT_PADDING_Y,
+                    )),
+            )
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        // Захват клавиши живёт только в своей секции: иначе следующее
+                        // нажатие в другом разделе молча переназначит хоткей.
+                        if self.section != Section::Hotkeys {
+                            self.cancel_capture();
+                        }
+                        let (title, caption) = section_header(self.section);
+                        widgets::page_header(ui, title, caption);
+                        ui.add_space(theme::SPACE_3);
+                        widgets::card(ui, |ui| match self.section {
+                            Section::Correction => self.draw_correction(ui),
+                            Section::Hotkeys => self.draw_hotkeys(ui, ctx),
+                            Section::Sounds => self.draw_sounds(ui),
+                            Section::Timeouts => self.draw_timeouts(ui),
+                            Section::Notifications => self.draw_notifications(ui),
+                            Section::Statistics => self.draw_statistics(ui),
+                            Section::General => self.draw_general(ui),
+                            Section::Voice => self.draw_voice(ui),
+                        });
+                    });
             });
-        });
     }
 
     fn draw_correction(&mut self, ui: &mut egui::Ui) {
         let apply = hotkey_label(&self.config.hotkeys.correction_apply);
         let hide = hotkey_label(&self.config.hotkeys.card_hide);
-        ui.heading("Коррекция раскладки");
-        ui.add_space(6.0);
-        let correction = &mut self.config.correction;
-        ui.checkbox(&mut correction.enabled, "Включить исправление раскладки");
-        ui.checkbox(
-            &mut correction.auto_correct,
-            "Исправлять автоматически (без F8)",
-        );
-        ui.checkbox(
-            &mut correction.show_notifications,
+
+        let mut enabled = self.config.correction.enabled;
+        if widgets::setting_row(
+            ui,
+            "Включить исправление раскладки",
+            None,
+            |ui| widgets::switch(ui, &mut enabled),
+        ) {
+            self.config.correction.enabled = enabled;
+        }
+        widgets::row_separator(ui);
+
+        let mut auto_correct = self.config.correction.auto_correct;
+        if widgets::setting_row(
+            ui,
+            "Исправлять автоматически",
+            Some("Без подтверждения: слово заменяется сразу"),
+            |ui| widgets::switch(ui, &mut auto_correct),
+        ) {
+            self.config.correction.auto_correct = auto_correct;
+        }
+        widgets::row_separator(ui);
+
+        let mut show_notifications = self.config.correction.show_notifications;
+        if widgets::setting_row(
+            ui,
             "Показывать подсказку у каретки",
-        );
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.label("Порог уверенности:");
-            ui.add(
-                egui::Slider::new(&mut correction.threshold, 0.0..=1.0)
-                    .fixed_decimals(2)
-                    .text(""),
-            );
-            ui.label(format!("{:.0}%", correction.threshold * 100.0));
-        });
-        ui.add_space(10.0);
+            None,
+            |ui| widgets::switch(ui, &mut show_notifications),
+        ) {
+            self.config.correction.show_notifications = show_notifications;
+        }
+        widgets::row_separator(ui);
+
+        let mut threshold = self.config.correction.threshold;
+        if widgets::setting_row(
+            ui,
+            "Порог уверенности",
+            Some("Ниже порога слово считается верным и не предлагается"),
+            |ui| {
+                ui.label(
+                    RichText::new(format!("{:.0}%", threshold * 100.0))
+                        .size(theme::TEXT_BODY)
+                        .strong()
+                        .color(theme::TEXT_PRIMARY),
+                );
+                ui.add(
+                    egui::Slider::new(&mut threshold, 0.0..=1.0)
+                        .fixed_decimals(2)
+                        .show_value(false)
+                        .trailing_fill(true),
+                )
+            },
+        ) {
+            self.config.correction.threshold = threshold;
+        }
+
+        ui.add_space(theme::SPACE_3);
         ui.label(
             RichText::new(format!(
-                "Применить исправление — {apply}, скрыть подсказку — {hide}. \
+                "Применить — {apply}, скрыть подсказку — {hide}. \
                  Клавиши меняются в разделе «Горячие клавиши»."
             ))
-            .small()
-            .weak(),
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_SECONDARY),
         );
     }
 
     /// Секция «Горячие клавиши»: назначение по нажатию, проверка и конфликты.
     fn draw_hotkeys(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.heading("Горячие клавиши");
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(
-                "Нажмите кнопку с текущим сочетанием и введите новое (Esc отменяет ввод). \
-                 Если клавиша не ловится, впишите сочетание в поле ниже.",
-            )
-            .small()
-            .weak(),
-        );
-        ui.add_space(10.0);
-
         let mut start_capture = None;
         let mut stop_capture = false;
         for field in HotkeyField::ALL {
@@ -544,8 +746,6 @@ impl SettingsApp {
     }
 
     fn draw_sounds(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Звуки");
-        ui.add_space(4.0);
         ui.label(
             RichText::new(
                 "У каждого звука: тумблер, число сигналов, пауза между ними, частота и длительность. \
@@ -605,8 +805,6 @@ impl SettingsApp {
     }
 
     fn draw_timeouts(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Таймауты");
-        ui.add_space(8.0);
         ui.horizontal(|ui| {
             ui.label("Пауза между словами (сек):");
             ui.add(
@@ -626,8 +824,6 @@ impl SettingsApp {
     }
 
     fn draw_notifications(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Уведомления");
-        ui.add_space(8.0);
         let notifications = &mut self.config.notifications;
         ui.checkbox(&mut notifications.enabled, "Показывать уведомления");
         ui.horizontal(|ui| {
@@ -637,8 +833,6 @@ impl SettingsApp {
     }
 
     fn draw_statistics(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Статистика");
-        ui.add_space(8.0);
         let statistics = &mut self.config.statistics;
         ui.checkbox(&mut statistics.enabled, "Вести статистику");
         ui.checkbox(
@@ -669,8 +863,6 @@ impl SettingsApp {
     }
 
     fn draw_general(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Общие");
-        ui.add_space(8.0);
         ui.checkbox(
             &mut self.config.autostart.enabled,
             "Запускать вместе с Windows",
@@ -734,8 +926,6 @@ impl SettingsApp {
 
     fn draw_voice(&mut self, ui: &mut egui::Ui) {
         let hotkey = hotkey_label(&self.config.hotkeys.voice_toggle);
-        ui.heading("Голосовой ввод");
-        ui.add_space(4.0);
         ui.label(
             RichText::new(format!(
                 "Диктовка: {hotkey} — вкл/выкл; движок (Whisper/Google/Vosk) и тест — ниже. \
@@ -986,30 +1176,9 @@ fn egui_key_token(key: egui::Key) -> &'static str {
     }
 }
 
-/// Тумблер вкл/выкл в стиле переключателя (зелёный = включено).
+/// Тумблер вкл/выкл в стиле переключателя (тонкая обёртка над [`widgets::switch`]).
 fn toggle_switch(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
-    let (rect, mut response) = ui.allocate_exact_size(egui::vec2(36.0, 18.0), egui::Sense::click());
-    if response.clicked() {
-        *on = !*on;
-        response.mark_changed();
-    }
-    let progress = ui.ctx().animate_bool(response.id, *on);
-    let radius = rect.height() / 2.0;
-    let background = if *on {
-        Color32::from_rgb(87, 200, 120)
-    } else {
-        Color32::from_rgb(90, 92, 98)
-    };
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(9), background);
-    let travel = 2.0_f32.mul_add(-radius, rect.width());
-    let knob_x = travel.mul_add(progress, rect.left() + radius);
-    ui.painter().circle_filled(
-        egui::pos2(knob_x, rect.center().y),
-        radius - 2.0,
-        Color32::WHITE,
-    );
-    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    widgets::switch(ui, on)
 }
 
 /// Поднять и сфокусировать уже открытое окно настроек (клик «Настройки»
@@ -1021,6 +1190,18 @@ fn show_window(ctx: &egui::Context) {
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Статус в нижней панели живёт 4 секунды.
+        if self
+            .status_at
+            .is_some_and(|at| at.elapsed() > Duration::from_secs(4))
+        {
+            self.status = None;
+            self.status_at = None;
+        }
+        if self.status.is_some() {
+            ctx.request_repaint_after(Duration::from_millis(250));
+        }
+
         // События меню трея (передаёт поток-наблюдатель из приложения)
         while let Some(id) = crate::tray::pop_queued_event(&self.tray_queue) {
             match id.as_str() {
@@ -1428,22 +1609,107 @@ fn draw_voice_model(
     );
 }
 
+/// Установить светлую тему и шрифты окна настроек.
+///
+/// Тема фиксированно светлая (тёмная — в будущих версиях), независимо от
+/// темы Windows: палитра из [`crate::theme`].
 fn install_theme(ctx: &egui::Context) {
-    // Тема — системная (тёмная/светлая по настройкам Windows): eframe сам
-    // применяет палитру по системе, а не наши переопределения.
-    // Кириллический шрифт из системы (с фолбэком на встроенные)
-    if let Ok(bytes) = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf") {
-        let mut fonts = egui::FontDefinitions::default();
-        fonts.font_data.insert(
-            "segoe_ui".to_string(),
-            Arc::new(egui::FontData::from_owned(bytes)),
-        );
-        if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
-            family.insert(0, "segoe_ui".to_string());
-        }
-        if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
-            family.push("segoe_ui".to_string());
-        }
-        ctx.set_fonts(fonts);
+    install_fonts(ctx);
+
+    let mut style = (*ctx.style()).clone();
+    style.visuals = egui::Visuals::light();
+
+    let visuals = &mut style.visuals;
+    visuals.panel_fill = theme::BG_WINDOW;
+    visuals.window_fill = theme::BG_CARD;
+    visuals.window_stroke = Stroke::new(theme::HAIRLINE, theme::BORDER_SUBTLE);
+    visuals.window_corner_radius = egui::CornerRadius::same(theme::RADIUS_CARD);
+    visuals.extreme_bg_color = theme::BG_CARD;
+    visuals.faint_bg_color = theme::BG_WINDOW;
+    visuals.override_text_color = Some(theme::TEXT_PRIMARY);
+    visuals.selection.bg_fill = theme::ACCENT_TINT;
+    visuals.selection.stroke = Stroke::new(theme::HAIRLINE, theme::TEXT_PRIMARY);
+    visuals.hyperlink_color = theme::ACCENT;
+    visuals.slider_trailing_fill = true;
+
+    let widgets = &mut visuals.widgets;
+    widgets.noninteractive.bg_fill = theme::BG_WINDOW;
+    widgets.noninteractive.bg_stroke = Stroke::new(theme::HAIRLINE, theme::BORDER_SUBTLE);
+    widgets.noninteractive.fg_stroke = Stroke::new(theme::HAIRLINE, theme::TEXT_PRIMARY);
+    widgets.noninteractive.corner_radius = egui::CornerRadius::same(theme::RADIUS_CARD);
+
+    widgets.inactive.bg_fill = theme::BG_CARD;
+    widgets.inactive.bg_stroke = Stroke::new(theme::HAIRLINE, theme::BORDER_STRONG);
+    widgets.inactive.fg_stroke = Stroke::new(theme::HAIRLINE, theme::TEXT_PRIMARY);
+    widgets.inactive.corner_radius = egui::CornerRadius::same(theme::RADIUS_CONTROL);
+
+    widgets.hovered.bg_fill = theme::BG_CARD_HOVER;
+    widgets.hovered.bg_stroke = Stroke::new(theme::HAIRLINE, theme::ACCENT);
+    widgets.hovered.fg_stroke = Stroke::new(theme::HAIRLINE, theme::TEXT_PRIMARY);
+    widgets.hovered.corner_radius = egui::CornerRadius::same(theme::RADIUS_CONTROL);
+
+    widgets.active.bg_fill = theme::BG_CARD;
+    widgets.active.bg_stroke = Stroke::new(theme::HAIRLINE, theme::ACCENT);
+    widgets.active.fg_stroke = Stroke::new(1.5_f32, theme::TEXT_PRIMARY);
+    widgets.active.corner_radius = egui::CornerRadius::same(theme::RADIUS_CONTROL);
+
+    widgets.open = widgets.inactive;
+
+    style.spacing.item_spacing = egui::vec2(theme::SPACE_2, theme::SPACE_2);
+    style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    style.spacing.interact_size.y = 26.0;
+
+    style.text_styles = [
+        (
+            egui::TextStyle::Heading,
+            egui::FontId::new(theme::TEXT_TITLE, egui::FontFamily::Proportional),
+        ),
+        (
+            egui::TextStyle::Body,
+            egui::FontId::new(theme::TEXT_BODY, egui::FontFamily::Proportional),
+        ),
+        (
+            egui::TextStyle::Button,
+            egui::FontId::new(theme::TEXT_BODY, egui::FontFamily::Proportional),
+        ),
+        (
+            egui::TextStyle::Small,
+            egui::FontId::new(theme::TEXT_CAPTION, egui::FontFamily::Proportional),
+        ),
+        (
+            egui::TextStyle::Monospace,
+            egui::FontId::new(theme::TEXT_MONO, egui::FontFamily::Monospace),
+        ),
+    ]
+    .into();
+
+    ctx.set_style(style);
+}
+
+/// Подключить системный шрифт с цепочкой фолбэков.
+///
+/// Порядок: Segoe UI Variable → Segoe UI → встроенные шрифты egui. Ошибки
+/// не выводятся: при отсутствии файлов окно просто остаётся на встроенном
+/// шрифте (на этой машине, например, `SegUIVar.ttf` отсутствует).
+fn install_fonts(ctx: &egui::Context) {
+    const CANDIDATES: [&str; 2] = [
+        "C:\\Windows\\Fonts\\SegUIVar.ttf",
+        "C:\\Windows\\Fonts\\segoeui.ttf",
+    ];
+    let Some(bytes) = CANDIDATES.iter().find_map(|path| std::fs::read(path).ok()) else {
+        return;
+    };
+
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        "segoe_ui".to_string(),
+        Arc::new(egui::FontData::from_owned(bytes)),
+    );
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+        family.insert(0, "segoe_ui".to_string());
     }
+    if let Some(family) = fonts.families.get_mut(&egui::FontFamily::Monospace) {
+        family.push("segoe_ui".to_string());
+    }
+    ctx.set_fonts(fonts);
 }
