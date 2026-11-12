@@ -235,43 +235,64 @@ pub fn progress(ui: &mut Ui, fraction: f32) {
 /// `options` — пары (значение, подпись); выбранное значение пишется в
 /// `current`. Возвращает `true`, если выбор изменился.
 pub fn segmented(ui: &mut Ui, options: &[(&str, &str)], current: &mut String) -> Response {
-    let mut changed = false;
-    let mut inner = egui::Frame::NONE
-        .fill(theme::TRACK)
-        .corner_radius(egui::CornerRadius::same(theme::RADIUS_CONTROL))
-        .inner_margin(egui::Margin::same(3))
-        .show(ui, |ui| {
-            ui.spacing_mut().item_spacing.x = 2.0;
-            ui.horizontal(|ui| {
-                for (value, title) in options {
-                    let selected = current == value;
-                    let text = RichText::new(*title)
-                        .size(theme::TEXT_CAPTION)
-                        .color(if selected {
-                            theme::TEXT_PRIMARY
-                        } else {
-                            theme::TEXT_SECONDARY
-                        });
-                    let button = egui::Button::new(text)
-                        .fill(if selected {
-                            theme::BG_CARD
-                        } else {
-                            Color32::TRANSPARENT
-                        })
-                        .stroke(if selected {
-                            Stroke::new(theme::HAIRLINE, theme::BORDER_SUBTLE)
-                        } else {
-                            Stroke::NONE
-                        })
-                        .corner_radius(egui::CornerRadius::same(theme::RADIUS_KEYCAP))
-                        .min_size(egui::vec2(0.0, 22.0));
-                    if ui.add(button).clicked() && !selected {
-                        *current = (*value).to_string();
-                        changed = true;
-                    }
-                }
+    let font = egui::FontId::proportional(theme::TEXT_CAPTION);
+    let widths: Vec<f32> = options
+        .iter()
+        .map(|(_, title)| {
+            let width = ui.fonts(|fonts| {
+                fonts
+                    .layout_no_wrap((*title).to_string(), font.clone(), theme::TEXT_PRIMARY)
+                    .size()
+                    .x
             });
-        });
+            width + 18.0
+        })
+        .collect();
+    let gaps = 2.0 * f32::from(u16::try_from(options.len().saturating_sub(1)).unwrap_or(0));
+    let total = widths.iter().sum::<f32>() + gaps + 8.0;
+
+    let mut changed = false;
+    let mut inner = ui.allocate_ui_with_layout(
+        egui::vec2(total.max(60.0), 28.0),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            egui::Frame::NONE
+                .fill(theme::TRACK)
+                .corner_radius(egui::CornerRadius::same(theme::RADIUS_CONTROL))
+                .inner_margin(egui::Margin::same(3))
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.x = 2.0;
+                    for (index, (value, title)) in options.iter().enumerate() {
+                        let selected = current == value;
+                        let text =
+                            RichText::new(*title)
+                                .size(theme::TEXT_CAPTION)
+                                .color(if selected {
+                                    theme::TEXT_PRIMARY
+                                } else {
+                                    theme::TEXT_SECONDARY
+                                });
+                        let button = egui::Button::new(text)
+                            .fill(if selected {
+                                theme::BG_CARD
+                            } else {
+                                Color32::TRANSPARENT
+                            })
+                            .stroke(if selected {
+                                Stroke::new(theme::HAIRLINE, theme::BORDER_SUBTLE)
+                            } else {
+                                Stroke::NONE
+                            })
+                            .corner_radius(egui::CornerRadius::same(theme::RADIUS_KEYCAP))
+                            .min_size(egui::vec2(widths[index], 22.0));
+                        if ui.add(button).clicked() && !selected {
+                            *current = (*value).to_string();
+                            changed = true;
+                        }
+                    }
+                });
+        },
+    );
     if changed {
         inner.response.mark_changed();
     }

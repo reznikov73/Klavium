@@ -1161,35 +1161,62 @@ impl SettingsApp {
 
     fn draw_voice(&mut self, ui: &mut egui::Ui) {
         let hotkey = hotkey_label(&self.config.hotkeys.voice_toggle);
+        let (active, status) = (self.voice_snapshot)();
+
         ui.label(
             RichText::new(format!(
-                "Диктовка: {hotkey} — вкл/выкл; движок (Whisper/Google/Vosk) и тест — ниже. \
-                 Клавиша меняется в разделе «Горячие клавиши»."
+                "Включение диктовки — {hotkey}. Клавиша меняется в разделе «Горячие клавиши»."
             ))
-            .small()
-            .weak(),
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_SECONDARY),
         );
-        ui.add_space(8.0);
+        ui.add_space(theme::SPACE_3);
+
         let voice = &mut self.config.voice;
-        ui.checkbox(&mut voice.enabled, "Включить голосовой ввод");
-        ui.horizontal(|ui| {
-            ui.label("Язык:");
-            egui::ComboBox::from_id_salt("voice_language")
-                .selected_text(match voice.language.as_str() {
-                    "ru" => "русский",
-                    "en" => "английский",
-                    _ => "авто (по раскладке)",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut voice.language,
-                        "auto".to_string(),
-                        "авто (по раскладке)",
-                    );
-                    ui.selectable_value(&mut voice.language, "ru".to_string(), "русский");
-                    ui.selectable_value(&mut voice.language, "en".to_string(), "английский");
-                });
+        let enabled = &mut voice.enabled;
+        widgets::setting_row(
+            ui,
+            "Голосовой ввод",
+            Some("Диктовка в любое поле ввода"),
+            |ui| widgets::switch(ui, enabled),
+        );
+        widgets::row_separator(ui);
+
+        let language = &mut voice.language;
+        widgets::setting_row(ui, "Язык распознавания", None, |ui| {
+            widgets::segmented(
+                ui,
+                &[("auto", "Авто"), ("ru", "Русский"), ("en", "Английский")],
+                language,
+            )
         });
+        widgets::row_separator(ui);
+
+        let punct = &mut voice.punct_dict;
+        widgets::setting_row(
+            ui,
+            "Голосовая пунктуация",
+            Some("«запятая» → «,»"),
+            |ui| widgets::switch(ui, punct),
+        );
+        widgets::row_separator(ui);
+
+        let caps = &mut voice.auto_capitalize;
+        widgets::setting_row(
+            ui,
+            "Автозаглавные буквы",
+            Some("После точки"),
+            |ui| widgets::switch(ui, caps),
+        );
+
+        ui.add_space(theme::SPACE_4);
+        ui.label(
+            RichText::new("Движок распознавания")
+                .size(theme::TEXT_CARD_TITLE)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
+        ui.add_space(theme::SPACE_2);
         draw_voice_engine(
             ui,
             voice,
@@ -1199,53 +1226,45 @@ impl SettingsApp {
             &*self.vosk_install_start,
             &*self.vosk_state,
         );
-        ui.add_space(8.0);
+
+        ui.add_space(theme::SPACE_4);
+        ui.horizontal(|ui| {
+            let (text, kind) = if active {
+                ("диктовка активна", widgets::BadgeKind::Ok)
+            } else {
+                ("диктовка выключена", widgets::BadgeKind::Info)
+            };
+            widgets::badge(ui, text, kind);
+            let label = if active {
+                "Выключить"
+            } else {
+                "Включить"
+            };
+            if widgets::secondary_button(ui, label).clicked() {
+                (self.voice_toggle)();
+            }
+        });
+        ui.add_space(theme::SPACE_1);
+        ui.label(
+            RichText::new(status)
+                .size(theme::TEXT_CAPTION)
+                .color(theme::TEXT_SECONDARY),
+        );
+
+        ui.add_space(theme::SPACE_4);
+        ui.label(
+            RichText::new("Тест распознавания")
+                .size(theme::TEXT_CARD_TITLE)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
+        ui.add_space(theme::SPACE_1);
         draw_voice_test(
             ui,
             &*self.voice_test_start,
             &*self.voice_test_stop,
             &*self.voice_test_state,
         );
-        ui.add_space(6.0);
-        ui.checkbox(
-            &mut voice.punct_dict,
-            "Голосовая пунктуация («запятая» → «,»)",
-        );
-        ui.checkbox(
-            &mut voice.auto_capitalize,
-            "Автозаглавные буквы после точки",
-        );
-        self.draw_voice_status(ui);
-    }
-
-    /// Статус голосового сервиса и кнопка включения/выключения диктовки.
-    fn draw_voice_status(&self, ui: &mut egui::Ui) {
-        ui.add_space(12.0);
-        ui.separator();
-        ui.add_space(8.0);
-        let (active, status) = (self.voice_snapshot)();
-        let hotkey = self.config.hotkeys.voice_toggle.trim().to_string();
-        let hotkey = if hotkey.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", hotkey_label(&hotkey))
-        };
-        ui.horizontal(|ui| {
-            if active {
-                ui.colored_label(Color32::from_rgb(87, 200, 120), "● диктовка активна");
-            } else {
-                ui.label(RichText::new("○ диктовка выключена").weak());
-            }
-            let action = if active {
-                "Выключить"
-            } else {
-                "Включить"
-            };
-            if ui.button(format!("{action}{hotkey}")).clicked() {
-                (self.voice_toggle)();
-            }
-        });
-        ui.label(RichText::new(status).small().weak());
     }
 }
 
@@ -1627,34 +1646,46 @@ fn draw_voice_test(
     test_stop: &dyn Fn(),
     test_state: &dyn Fn() -> RecognitionTest,
 ) {
-    ui.separator();
-    ui.label(RichText::new("Тест распознавания").strong());
     ui.label(
         RichText::new("Прочитайте вслух (фразы разделяйте короткими паузами):")
-            .small()
-            .weak(),
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_SECONDARY),
     );
-    ui.label(RichText::new(VOICE_TEST_SAMPLE).italics());
+    ui.label(
+        RichText::new(VOICE_TEST_SAMPLE)
+            .size(theme::TEXT_CAPTION)
+            .italics()
+            .color(theme::TEXT_PRIMARY),
+    );
+    ui.add_space(theme::SPACE_2);
     let state = test_state();
     ui.horizontal(|ui| {
         if state.running {
-            if ui.button("⏹ Стоп").clicked() {
+            if widgets::secondary_button(ui, "Стоп").clicked() {
                 test_stop();
             }
-            ui.label(RichText::new(format!("осталось ~{} с", state.seconds_left)).small());
+            ui.label(
+                RichText::new(format!("осталось ~{} с", state.seconds_left))
+                    .size(theme::TEXT_CAPTION)
+                    .color(theme::TEXT_SECONDARY),
+            );
         } else if state.waiting_engine {
-            if ui.button("⏹ Отмена").clicked() {
+            if widgets::secondary_button(ui, "Отмена").clicked() {
                 test_stop();
             }
-            ui.label(RichText::new("ждём загрузку движка…").small().weak());
-        } else if ui.button("🎤 Начать тест (15 с)").clicked() {
+            ui.label(
+                RichText::new("ждём загрузку движка…")
+                    .size(theme::TEXT_CAPTION)
+                    .color(theme::TEXT_SECONDARY),
+            );
+        } else if widgets::secondary_button(ui, "Начать тест (15 с)").clicked() {
             test_start();
         }
         if !state.results.is_empty() && !state.running {
             ui.label(
                 RichText::new("(новый тест очистит прошлый результат)")
-                    .small()
-                    .weak(),
+                    .size(theme::TEXT_CAPTION)
+                    .color(theme::TEXT_SECONDARY),
             );
         }
     });
@@ -1663,25 +1694,36 @@ fn draw_voice_test(
             RichText::new(
                 "Движок ещё загружается — тест начнётся автоматически, как только он будет готов.",
             )
-            .small()
-            .weak(),
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_SECONDARY),
         );
     }
     if !state.results.is_empty() {
-        ui.add_space(4.0);
-        ui.label(RichText::new("Распознано:").strong());
+        ui.add_space(theme::SPACE_2);
+        ui.label(
+            RichText::new("Распознано")
+                .size(theme::TEXT_CAPTION)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
         for line in &state.results {
-            ui.label(RichText::new(line));
+            ui.label(
+                RichText::new(line)
+                    .monospace()
+                    .size(theme::TEXT_MONO)
+                    .color(theme::TEXT_PRIMARY),
+            );
         }
     }
     if let Some(error) = &state.error {
-        ui.colored_label(Color32::from_rgb(235, 87, 87), error);
+        ui.add_space(theme::SPACE_1);
+        widgets::badge(ui, error, widgets::BadgeKind::Error);
     }
     if state.running {
         ui.label(
             RichText::new("Говорите — распознанные фразы появятся здесь; тест остановится сам.")
-                .small()
-                .weak(),
+                .size(theme::TEXT_CAPTION)
+                .color(theme::TEXT_SECONDARY),
         );
     }
 }
@@ -1716,27 +1758,30 @@ fn draw_voice_engine(
     vosk_state: &dyn Fn() -> DownloadStatus,
 ) {
     ui.horizontal(|ui| {
-        ui.label("Движок распознавания:");
-        egui::ComboBox::from_id_salt("voice_engine_kind")
-            .selected_text(match voice.engine.as_str() {
-                "google" => "Google (онлайн)",
-                "vosk" => "Vosk (офлайн)",
-                _ => "Whisper (офлайн)",
-            })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut voice.engine, "whisper".to_string(), "Whisper (офлайн)");
-                ui.selectable_value(&mut voice.engine, "google".to_string(), "Google (онлайн)");
-                ui.selectable_value(&mut voice.engine, "vosk".to_string(), "Vosk (офлайн)");
-            });
+        ui.label(
+            RichText::new("Движок")
+                .size(theme::TEXT_BODY)
+                .color(theme::TEXT_PRIMARY),
+        );
+        widgets::segmented(
+            ui,
+            &[
+                ("whisper", "Whisper"),
+                ("google", "Google"),
+                ("vosk", "Vosk"),
+            ],
+            &mut voice.engine,
+        );
     });
     match voice.engine.as_str() {
         "google" => {
+            ui.add_space(theme::SPACE_1);
             ui.label(
                 RichText::new(
                     "Онлайн-распознавание Google: нужен интернет. Язык — из настроек выше («авто» — по раскладке).",
                 )
-                .small()
-                .weak(),
+                .size(theme::TEXT_CAPTION)
+                .color(theme::TEXT_SECONDARY),
             );
         }
         "vosk" => draw_voice_vosk(ui, voice, data_dir, vosk_install_start, vosk_state),
@@ -1750,8 +1795,8 @@ fn draw_voice_engine(
     }
     ui.label(
         RichText::new("Смена движка применяется сразу после сохранения настроек.")
-            .small()
-            .weak(),
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_SECONDARY),
     );
 }
 
