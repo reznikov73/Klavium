@@ -9,7 +9,8 @@ use windows_sys::Win32::Foundation::{HWND, LPARAM, POINT};
 use windows_sys::Win32::Graphics::Gdi::ClientToScreen;
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::System::Threading::{
-    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
+    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId, OpenProcess,
+    QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -82,6 +83,67 @@ pub fn window_class(window: HWND) -> String {
 #[must_use]
 pub fn window_thread_id(window: HWND) -> u32 {
     unsafe { GetWindowThreadProcessId(window, std::ptr::null_mut()) }
+}
+
+/// Кэш «окно → имя процесса»: `OpenProcess` на каждое слово слишком дорог,
+/// а активное окно меняется редко.
+static PROCESS_CACHE: OnceLock<std::sync::Mutex<Option<(isize, String)>>> = OnceLock::new();
+
+/// Имя процесса (без пути и `.exe`), которому принадлежит активное окно.
+///
+/// `None` — окно не определено или процесс недоступен (защищённые процессы,
+/// приложения Microsoft Store и т.п.).
+#[must_use]
+pub fn foreground_process_name() -> Option<String> {
+    let window = foreground_window()?;
+    let key = window as isize;
+    let cache = PROCESS_CACHE.get_or_init(|| std::sync::Mutex::new(None));
+
+    if let Ok(guard) = cache.lock() {
+        if let Some((cached_key, name)) = guard.as_ref() {
+            if *cached_key == key {
+                return Some(name.clone());
+            }
+        }
+    }
+
+    let name = process_name_of(window)?;
+    let stem = name
+        .strip_suffix(".exe")
+        .or_else(|| name.strip_suffix(".EXE"))
+        .unwrap_or(&name)
+        .to_string();
+    if let Ok(mut guard) = cache.lock() {
+        *guard = Some((key, stem.clone()));
+    }
+    Some(stem)
+}
+
+/// Имя исполняемого файла процесса, владеющего окном.
+fn process_name_of(window: HWND) -> Option<String> {
+    let mut pid: u32 = 0;
+    // HWND здесь только читается системой — передаём как есть.
+    unsafe { GetWindowThreadProcessId(window, &mut pid) };
+    if pid == 0 {
+        return None;
+    }
+
+    let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if process.is_null() {
+        return None;
+    }
+
+    let mut buffer = [0u16; 1024];
+    let mut size = u32::try_from(buffer.len()).ok()?;
+    let ok = unsafe { QueryFullProcessImageNameW(process, 0, buffer.as_mut_ptr(), &mut size) };
+    unsafe { windows_sys::Win32::Foundation::CloseHandle(process) };
+    if ok == 0 || size == 0 {
+        return None;
+    }
+
+    let path = String::from_utf16_lossy(&buffer[..size as usize]);
+    let file = path.rsplit(['\\', '/']).next()?.to_string();
+    Some(file)
 }
 
 /// Сохранённая цель ввода: окно и элемент фокуса.

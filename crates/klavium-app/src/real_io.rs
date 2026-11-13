@@ -124,6 +124,10 @@ impl EngineIo for PlatformIo {
     fn modifiers(&self) -> Modifiers {
         current_modifiers()
     }
+
+    fn foreground_exe(&self) -> Option<String> {
+        klavium_platform::window::foreground_process_name()
+    }
 }
 
 /// Текущее состояние модификаторов (физических клавиш) — для хоткеев и движка.

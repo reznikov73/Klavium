@@ -33,6 +33,7 @@ pub fn engine_config(config: &AppConfig) -> EngineConfig {
         threshold: config.correction.threshold,
         hotkey_correct: crate::hotkeys::CompiledHotkeys::from_config(config).correction_apply,
         word_timeout: Duration::from_secs_f64(config.timeouts.word_start.max(0.1)),
+        app_rules: config.correction.app_rules.clone(),
         paste_threshold: 40,
         paste_long_text: config.voice.paste_long_text,
         run_jobs_inline: false,

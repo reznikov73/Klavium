@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use egui::{Color32, RichText, Stroke};
+use klavium_core::apprules::{AppRule, AppRuleMode};
 use klavium_core::config::{AppConfig, SoundSpec};
 use klavium_core::hotkeys::Hotkey;
 use klavium_core::stats::StatsData;
@@ -73,6 +74,9 @@ pub struct SettingsContext {
     pub capture_active: Box<dyn Fn(bool) + 'static>,
     /// Очередь нажатий от хука (работает и для Pause/PrintScreen/ScrollLock).
     pub capture_queue: CaptureQueue,
+    /// Состояние паузы коррекции для диагностики (`None` — работает,
+    /// `Some("")` — до перезапуска, `Some("12 мин")` — осталось).
+    pub pause_state: Box<dyn Fn() -> Option<String> + 'static>,
     /// Запустить тест распознавания.
     pub voice_test_start: Box<dyn Fn() + 'static>,
     /// Остановить тест распознавания.
@@ -264,6 +268,12 @@ struct SettingsApp {
     status_at: Option<Instant>,
     /// Момент первого клика по «Сбросить статистику» (подтверждение).
     reset_armed: Option<Instant>,
+    /// Черновик имени процесса в карточке «Приложения».
+    new_app_rule: String,
+    /// Момент, когда ловим активное окно для правила (кнопка «Текущее окно»).
+    app_capture_at: Option<Instant>,
+    /// Состояние паузы коррекции для диагностики (`None` — работает).
+    pause_state: Box<dyn Fn() -> Option<String> + 'static>,
 }
 
 impl SettingsApp {
@@ -312,6 +322,9 @@ impl SettingsApp {
             icon,
             status_at: None,
             reset_armed: None,
+            new_app_rule: String::new(),
+            app_capture_at: None,
+            pause_state: context.pause_state,
         }
     }
 
@@ -355,6 +368,7 @@ impl SettingsApp {
     }
 
     fn draw(&mut self, ctx: &egui::Context) {
+        self.poll_app_capture();
         self.draw_sidebar(ctx);
         self.draw_bottom_bar(ctx);
         self.draw_content(ctx);
@@ -637,7 +651,7 @@ impl SettingsApp {
         let (active, voice_status) = (self.voice_snapshot)();
         self.diagnostics_app(ui);
         self.diagnostics_hotkeys(ui);
-        Self::diagnostics_state(ui, active, &voice_status);
+        Self::diagnostics_state(ui, active, &voice_status, &self.pause_state);
         ui.add_space(theme::SPACE_4);
         ui.horizontal(|ui| {
             if widgets::secondary_button(ui, "Открыть журнал").clicked() {
@@ -681,7 +695,12 @@ impl SettingsApp {
     }
 
     /// «Состояние»: хук, его последний колбэк, медленные колбэки и диктовка.
-    fn diagnostics_state(ui: &mut egui::Ui, voice_active: bool, voice_status: &str) {
+    fn diagnostics_state(
+        ui: &mut egui::Ui,
+        voice_active: bool,
+        voice_status: &str,
+        pause_state: &dyn Fn() -> Option<String>,
+    ) {
         use klavium_platform::hook;
         ui.add_space(theme::SPACE_4);
         diagnostics_title(ui, "Состояние");
@@ -718,6 +737,16 @@ impl SettingsApp {
         };
         read_only_row(ui, "Медленных колбэков (>50 мс)", &slow_text);
         ui.add_space(theme::SPACE_2);
+
+        let (pause_text, pause_kind) = match (pause_state)() {
+            None => ("коррекция работает".to_string(), widgets::BadgeKind::Ok),
+            Some(left) if left.is_empty() => {
+                ("пауза до перезапуска".to_string(), widgets::BadgeKind::Warn)
+            }
+            Some(left) => (format!("пауза: {left}"), widgets::BadgeKind::Warn),
+        };
+        widgets::badge(ui, &pause_text, pause_kind);
+        ui.add_space(theme::SPACE_1);
 
         let (voice_text, voice_kind) = if voice_active {
             ("диктовка активна", widgets::BadgeKind::Ok)
@@ -1383,6 +1412,157 @@ impl SettingsApp {
         if let Some(status) = (self.data_move_status)() {
             ui.add_space(theme::SPACE_1);
             widgets::badge(ui, &status, widgets::BadgeKind::Warn);
+        }
+
+        ui.add_space(theme::SPACE_6);
+        self.draw_app_rules(ui);
+    }
+
+    /// Карточка «Приложения»: где коррекция выключена или работает только по хоткею.
+    fn draw_app_rules(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            RichText::new("Приложения")
+                .size(theme::TEXT_CARD_TITLE)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
+        ui.add_space(theme::SPACE_1);
+        ui.label(
+            RichText::new(
+                "Исключения по имени процесса: в терминале, IDE или игре исправление может мешать. \
+                 Порядок важен — действует первое подходящее правило; * — любой набор символов.",
+            )
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_SECONDARY),
+        );
+        ui.add_space(theme::SPACE_2);
+
+        if self.config.correction.app_rules.is_empty() {
+            ui.label(
+                RichText::new("Правил нет — коррекция работает везде.")
+                    .size(theme::TEXT_CAPTION)
+                    .color(theme::TEXT_SECONDARY),
+            );
+        } else {
+            let mut remove: Option<usize> = None;
+            for (index, rule) in self.config.correction.app_rules.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(&rule.pattern)
+                            .monospace()
+                            .size(theme::TEXT_MONO)
+                            .color(theme::TEXT_PRIMARY),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::link_button(ui, "Удалить").clicked() {
+                            remove = Some(index);
+                        }
+                        let mut mode = match rule.mode {
+                            AppRuleMode::Off => "off".to_string(),
+                            AppRuleMode::Manual => "manual".to_string(),
+                        };
+                        let response = widgets::segmented(
+                            ui,
+                            &[("off", "Не исправлять"), ("manual", "Только по хоткею")],
+                            &mut mode,
+                        );
+                        if response.changed() {
+                            rule.mode = if mode == "off" {
+                                AppRuleMode::Off
+                            } else {
+                                AppRuleMode::Manual
+                            };
+                        }
+                    });
+                });
+                ui.add_space(theme::SPACE_1);
+            }
+            if let Some(index) = remove {
+                self.config.correction.app_rules.remove(index);
+            }
+        }
+
+        ui.add_space(theme::SPACE_2);
+        ui.horizontal(|ui| {
+            let width = (ui.available_width() - 250.0).max(160.0);
+            ui.add_sized(
+                [width, 26.0],
+                egui::TextEdit::singleline(&mut self.new_app_rule)
+                    .hint_text("Имя процесса, например code"),
+            );
+            if widgets::secondary_button(ui, "Добавить").clicked() {
+                self.add_app_rule(AppRuleMode::Off);
+            }
+            if widgets::secondary_button(ui, "Текущее окно").clicked() {
+                self.app_capture_at = Some(Instant::now());
+                self.set_status(
+                    "Переключитесь в нужное приложение — добавлю через 3 секунды".to_string(),
+                    false,
+                );
+            }
+        });
+        ui.add_space(theme::SPACE_1);
+        ui.label(
+            RichText::new(
+                "«Текущее окно» запоминает процесс окна, в котором вы работаете: нажмите и переключитесь.",
+            )
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_SECONDARY),
+        );
+    }
+
+    /// Добавить правило из поля ввода (или из пойманного окна).
+    fn add_app_rule(&mut self, mode: AppRuleMode) {
+        let pattern = self.new_app_rule.trim().to_string();
+        self.add_app_rule_pattern(&pattern, mode);
+        self.new_app_rule.clear();
+    }
+
+    /// Добавить правило с готовым шаблоном (без дублей).
+    fn add_app_rule_pattern(&mut self, pattern: &str, mode: AppRuleMode) {
+        let normalized = klavium_core::apprules::normalize(pattern);
+        if normalized.is_empty() {
+            self.set_status("Укажите имя процесса".to_string(), true);
+            return;
+        }
+        if self
+            .config
+            .correction
+            .app_rules
+            .iter()
+            .any(|rule| klavium_core::apprules::normalize(rule.pattern.clone()) == normalized)
+        {
+            self.set_status(format!("Правило для «{normalized}» уже есть"), true);
+            return;
+        }
+        self.config
+            .correction
+            .app_rules
+            .push(AppRule::new(normalized.clone(), mode));
+        self.set_status(format!("Добавлено правило для «{normalized}»"), false);
+    }
+
+    /// Ответ на «Текущее окно»: через 3 с берём процесс активного окна.
+    fn poll_app_capture(&mut self) {
+        let Some(started) = self.app_capture_at else {
+            return;
+        };
+        if started.elapsed() < std::time::Duration::from_secs(3) {
+            return;
+        }
+        self.app_capture_at = None;
+        match klavium_platform::window::foreground_process_name() {
+            Some(name) if !name.eq_ignore_ascii_case("klavium") => {
+                self.add_app_rule_pattern(&name, AppRuleMode::Off);
+            }
+            Some(_) => self.set_status(
+                "Это окно Klavium — переключитесь в другое приложение".to_string(),
+                true,
+            ),
+            None => self.set_status(
+                "Не удалось определить процесс активного окна".to_string(),
+                true,
+            ),
         }
     }
 

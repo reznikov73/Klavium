@@ -146,10 +146,13 @@ fn main() -> anyhow::Result<()> {
     let (ui_tx, ui_rx) = mpsc::channel::<()>();
 
     // Трей живёт в отдельном потоке: иконке нужен собственный насос сообщений.
+    let pause_access: Arc<dyn tray::PauseAccess> = Arc::new(EnginePause(Arc::downgrade(&engine)));
     let (tray_tx, tray_queue) = spawn_system_tray(
         Arc::clone(&voice_service),
         Arc::clone(&stats_service),
         ui_tx.clone(),
+        pause_access,
+        Arc::clone(&overlay),
     );
 
     services::spawn_layout_monitor(
@@ -362,6 +365,7 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
     let vosk_install_start = Arc::clone(&ui.vosk_install);
     let vosk_install_state = Arc::clone(&ui.vosk_install);
     let save_hotkeys = Arc::clone(&ui.hotkeys);
+    let pause_snapshot = Arc::clone(&ui.engine);
     let settings_context = settings::SettingsContext {
         config: ui.config,
         on_save: Box::new(move |new_config: AppConfig| -> Result<(), String> {
@@ -383,6 +387,11 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
         sound_preview: Box::new(move |spec| sound_preview.play_spec(spec)),
         stats_snapshot: Box::new(move || stats_snapshot.snapshot()),
         stats_reset: Box::new(move || stats_reset.reset()),
+        pause_state: Box::new(move || match pause_snapshot.pause_remaining() {
+            None => None,
+            Some(None) => Some(String::new()),
+            Some(Some(left)) => Some(format!("{} мин", (left.as_secs() / 60).max(1))),
+        }),
         voice_toggle: Box::new(move || voice_toggle.toggle()),
         voice_snapshot: Box::new(move || {
             (voice_snapshot.is_active(), voice_snapshot.status_text())
@@ -632,6 +641,8 @@ fn spawn_system_tray(
     voice: Arc<voice::VoiceService>,
     stats: Arc<stats::StatsService>,
     ui_tx: std::sync::mpsc::Sender<()>,
+    pause: Arc<dyn tray::PauseAccess>,
+    overlay: Arc<overlay::OverlayHandle>,
 ) -> (std::sync::mpsc::Sender<tray::TrayCommand>, tray::TrayQueue) {
     let queue: tray::TrayQueue = Arc::new(Mutex::new(std::collections::VecDeque::new()));
     let thread_queue = Arc::clone(&queue);
@@ -660,8 +671,11 @@ fn spawn_system_tray(
                 while let Ok(command) = commands_rx.try_recv() {
                     match command {
                         tray::TrayCommand::SetLayout(layout) => tray.set_layout_icon(layout),
+                        tray::TrayCommand::SetPause(pause_now) => tray.set_pause_status(pause_now),
                     }
                 }
+                // Автоснятие паузы по таймеру: раз в полсекунды сверяемся с движком.
+                tray.set_pause_status(pause.pause_status());
                 while let Some(id) = tray::poll_menu_event() {
                     match id.as_str() {
                         tray::MENU_QUIT => {
@@ -672,6 +686,28 @@ fn spawn_system_tray(
                             std::process::exit(0);
                         }
                         tray::MENU_VOICE => voice.toggle(),
+                        tray::MENU_PAUSE_30 | tray::MENU_PAUSE_FOREVER | tray::MENU_PAUSE_OFF => {
+                            let request = match id.as_str() {
+                                tray::MENU_PAUSE_30 => tray::PauseRequest::Minutes(30),
+                                tray::MENU_PAUSE_FOREVER => tray::PauseRequest::Forever,
+                                _ => tray::PauseRequest::Resume,
+                            };
+                            pause.apply_pause(request);
+                            tray.set_pause_status(pause.pause_status());
+                            let (text, color) = match request {
+                                tray::PauseRequest::Minutes(minutes) => {
+                                    (format!("Исправление на паузе {minutes} мин"), (37, 99, 235))
+                                }
+                                tray::PauseRequest::Forever => (
+                                    "Исправление на паузе до перезапуска".to_string(),
+                                    (37, 99, 235),
+                                ),
+                                tray::PauseRequest::Resume => {
+                                    ("Исправление снова работает".to_string(), (22, 163, 74))
+                                }
+                            };
+                            overlay.show_toast(&text, color);
+                        }
                         _ => {
                             thread_queue
                                 .lock()
@@ -690,6 +726,40 @@ fn spawn_system_tray(
         tracing::error!(target: "klavium", "не удалось запустить поток трея");
     }
     (commands_tx, queue)
+}
+
+/// Пауза коррекции из меню трея: состояние живёт в движке (только в памяти).
+///
+/// Ссылка слабая: поток трея живёт до конца процесса и не должен удерживать
+/// движок — иначе канал событий никогда не закроется и выход залипнет.
+struct EnginePause(std::sync::Weak<CorrectionEngine>);
+
+impl tray::PauseAccess for EnginePause {
+    fn pause_status(&self) -> tray::PauseStatus {
+        let Some(engine) = self.0.upgrade() else {
+            return tray::PauseStatus::Off;
+        };
+        match engine.pause_remaining() {
+            None => tray::PauseStatus::Off,
+            Some(None) => tray::PauseStatus::Forever,
+            Some(Some(left)) => tray::PauseStatus::Timed(left.as_secs()),
+        }
+    }
+
+    fn apply_pause(&self, request: tray::PauseRequest) {
+        let Some(engine) = self.0.upgrade() else {
+            return;
+        };
+        match request {
+            tray::PauseRequest::Minutes(minutes) => {
+                engine.pause_for(Some(std::time::Duration::from_secs(
+                    u64::from(minutes) * 60,
+                )));
+            }
+            tray::PauseRequest::Forever => engine.pause_for(None),
+            tray::PauseRequest::Resume => engine.resume(),
+        }
+    }
 }
 
 /// Открывать окно настроек сразу: ручной запуск — да; автозапуск (`--silent`) — нет.

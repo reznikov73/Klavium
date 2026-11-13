@@ -20,6 +20,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod apprules;
 pub mod config;
 pub mod convert;
 pub mod detect;

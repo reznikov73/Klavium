@@ -17,12 +17,62 @@ pub const MENU_STATS: &str = "klavium.stats";
 pub const MENU_VOICE: &str = "klavium.voice";
 /// Идентификатор пункта «Выход».
 pub const MENU_QUIT: &str = "klavium.quit";
+/// Идентификатор пункта «Пауза на 30 минут».
+pub const MENU_PAUSE_30: &str = "klavium.pause30";
+/// Идентификатор пункта «Пауза до перезапуска».
+pub const MENU_PAUSE_FOREVER: &str = "klavium.pauseforever";
+/// Идентификатор пункта «Снять паузу».
+pub const MENU_PAUSE_OFF: &str = "klavium.pauseoff";
+
+/// Состояние паузы для меню и подсказки трея.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseStatus {
+    /// Паузы нет.
+    Off,
+    /// Осталось столько секунд.
+    Timed(u64),
+    /// До перезапуска приложения.
+    Forever,
+}
+
+impl PauseStatus {
+    /// Суффикс подсказки трея.
+    #[must_use]
+    pub fn tooltip_suffix(self) -> String {
+        match self {
+            Self::Off => String::new(),
+            Self::Timed(secs) => format!(" (пауза {} мин)", (secs / 60).max(1)),
+            Self::Forever => " (пауза)".to_string(),
+        }
+    }
+}
+
+/// Запрос на изменение паузы из меню трея.
+#[derive(Debug, Clone, Copy)]
+pub enum PauseRequest {
+    /// Пауза на указанное число минут.
+    Minutes(u32),
+    /// Пауза до перезапуска.
+    Forever,
+    /// Снять паузу.
+    Resume,
+}
+
+/// Доступ к паузе коррекции из потока трея (реализуется в приложении).
+pub trait PauseAccess: Send + Sync {
+    /// Текущее состояние.
+    fn pause_status(&self) -> PauseStatus;
+    /// Применить запрос (только в памяти процесса).
+    fn apply_pause(&self, request: PauseRequest);
+}
 
 /// Команды потоку трея (иконка живёт только в его потоке).
 #[derive(Debug, Clone, Copy)]
 pub enum TrayCommand {
     /// Обновить иконку и подсказку по текущей раскладке.
     SetLayout(Option<Layout>),
+    /// Обновить состояние паузы в меню и подсказке.
+    SetPause(PauseStatus),
 }
 
 /// Иконки трея (сгенерированы `tools/gen_icons.py`): EN — синяя, RU — красная,
@@ -60,14 +110,44 @@ pub fn neutral_icon_rgba() -> Vec<u8> {
 /// Дескриптор трей-иконки.
 pub struct TrayHandle {
     tray: tray_icon::TrayIcon,
+    layout: Mutex<Option<Layout>>,
+    pause: Mutex<PauseStatus>,
+    pause_30: MenuItem,
+    pause_forever: MenuItem,
+    pause_off: MenuItem,
 }
 
 impl TrayHandle {
     /// Обновить иконку и подсказку трея по текущей раскладке
     /// (EN — синяя, RU — красная).
     pub fn set_layout_icon(&self, layout: Option<Layout>) {
+        *self.layout.lock().unwrap_or_else(PoisonError::into_inner) = layout;
         let _ = self.tray.set_icon(Some(icon_for(layout)));
-        let _ = self.tray.set_tooltip(Some(tooltip_for(layout)));
+        self.refresh_tooltip();
+    }
+
+    /// Обновить пункты меню и подсказку по состоянию паузы.
+    pub fn set_pause_status(&self, status: PauseStatus) {
+        {
+            let mut guard = self.pause.lock().unwrap_or_else(PoisonError::into_inner);
+            if *guard == status {
+                return;
+            }
+            *guard = status;
+        }
+        let idle = status == PauseStatus::Off;
+        self.pause_30.set_enabled(idle);
+        self.pause_forever.set_enabled(idle);
+        self.pause_off.set_enabled(!idle);
+        self.refresh_tooltip();
+    }
+
+    /// Пересобрать подсказку из раскладки и паузы.
+    fn refresh_tooltip(&self) {
+        let layout = *self.layout.lock().unwrap_or_else(PoisonError::into_inner);
+        let pause = *self.pause.lock().unwrap_or_else(PoisonError::into_inner);
+        let text = format!("{}{}", tooltip_for(layout), pause.tooltip_suffix());
+        let _ = self.tray.set_tooltip(Some(text));
     }
 }
 
@@ -81,10 +161,17 @@ pub fn create_tray() -> Result<TrayHandle> {
     let settings_item = MenuItem::with_id(MENU_SETTINGS, "Настройки", true, None);
     let stats_item = MenuItem::with_id(MENU_STATS, "Статистика", true, None);
     let voice_item = MenuItem::with_id(MENU_VOICE, "Голосовой ввод", true, None);
+    let pause_30 = MenuItem::with_id(MENU_PAUSE_30, "Пауза на 30 минут", true, None);
+    let pause_forever = MenuItem::with_id(MENU_PAUSE_FOREVER, "Пауза до перезапуска", true, None);
+    let pause_off = MenuItem::with_id(MENU_PAUSE_OFF, "Снять паузу", false, None);
     let quit_item = MenuItem::with_id(MENU_QUIT, "Выход", true, None);
     menu.append(&settings_item)?;
     menu.append(&stats_item)?;
     menu.append(&voice_item)?;
+    menu.append(&PredefinedMenuItem::separator())?;
+    menu.append(&pause_30)?;
+    menu.append(&pause_forever)?;
+    menu.append(&pause_off)?;
     menu.append(&PredefinedMenuItem::separator())?;
     menu.append(&quit_item)?;
 
@@ -95,7 +182,14 @@ pub fn create_tray() -> Result<TrayHandle> {
         .with_tooltip(tooltip_for(initial))
         .build()?;
 
-    Ok(TrayHandle { tray })
+    Ok(TrayHandle {
+        tray,
+        layout: Mutex::new(initial),
+        pause: Mutex::new(PauseStatus::Off),
+        pause_30,
+        pause_forever,
+        pause_off,
+    })
 }
 
 /// Неблокирующий опрос событий меню: возвращает id нажатого пункта.

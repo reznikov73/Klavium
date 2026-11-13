@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Deserializer, Serialize};
 
+use crate::apprules::AppRule;
+
 /// Один звуковой сигнал: частота, длительность и рисунок последовательности
 /// (сколько сигналов и с какой паузой между ними).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,6 +263,8 @@ pub struct CorrectionConfig {
     pub auto_correct: bool,
     /// Показывать подсказки.
     pub show_notifications: bool,
+    /// Правила для отдельных приложений (порядок = приоритет).
+    pub app_rules: Vec<AppRule>,
 }
 
 impl Default for CorrectionConfig {
@@ -270,6 +274,7 @@ impl Default for CorrectionConfig {
             threshold: 0.7,
             auto_correct: false,
             show_notifications: true,
+            app_rules: Vec::new(),
         }
     }
 }

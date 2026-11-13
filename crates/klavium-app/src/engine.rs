@@ -28,6 +28,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use klavium_core::apprules::{self, AppRule, AppRuleMode};
 use klavium_core::detect::{detect_language, smart_correction, AMBIGUOUS_EN_CHARS};
 use klavium_core::{convert, keys, Layout};
 use klavium_platform::hook::INJECT_EXTRA_INFO;
@@ -86,6 +87,19 @@ pub trait EngineIo: Send + Sync {
     }
     /// Текущее состояние модификаторов.
     fn modifiers(&self) -> Modifiers;
+    /// Имя процесса активного окна (без `.exe`) — для правил приложений.
+    fn foreground_exe(&self) -> Option<String> {
+        None
+    }
+}
+
+/// Текст паузы для журнала и тоста.
+#[must_use]
+pub fn pause_text(duration: Option<Duration>) -> String {
+    duration.map_or_else(
+        || "до перезапуска".to_string(),
+        |d| format!("на {} мин", d.as_secs() / 60),
+    )
 }
 
 /// Настройки движка.
@@ -109,6 +123,8 @@ pub struct EngineConfig {
     pub paste_long_text: bool,
     /// Пауза между словами одного набора (по умолчанию 5 с).
     pub word_timeout: Duration,
+    /// Правила для отдельных приложений.
+    pub app_rules: Vec<AppRule>,
     /// Выполнять задания синхронно (используется тестами).
     pub run_jobs_inline: bool,
 }
@@ -123,6 +139,7 @@ impl Default for EngineConfig {
             paste_threshold: 40,
             paste_long_text: true,
             word_timeout: Duration::from_secs(5),
+            app_rules: Vec::new(),
             run_jobs_inline: false,
         }
     }
@@ -312,6 +329,35 @@ pub struct CorrectionEngine {
     events: Sender<EngineEvent>,
     /// Канал воркера; пусто — синхронный режим (тесты).
     jobs: OnceLock<Sender<Job>>,
+    /// Пауза коррекции: `None` — работает, иначе когда закончится.
+    pause: Mutex<Option<PauseKind>>,
+}
+
+/// Пауза коррекции (только в памяти — после перезапуска снимается сама).
+#[derive(Debug, Clone, Copy)]
+enum PauseKind {
+    /// До указанного момента.
+    Until(Instant),
+    /// До перезапуска приложения.
+    Forever,
+}
+
+impl PauseKind {
+    /// Осталось до снятия; `None` — бессрочно.
+    fn remaining(self) -> Option<Duration> {
+        match self {
+            Self::Until(deadline) => Some(deadline.saturating_duration_since(Instant::now())),
+            Self::Forever => None,
+        }
+    }
+
+    /// Пауза истекла.
+    fn expired(self) -> bool {
+        match self {
+            Self::Until(deadline) => Instant::now() >= deadline,
+            Self::Forever => false,
+        }
+    }
 }
 
 impl CorrectionEngine {
@@ -333,6 +379,7 @@ impl CorrectionEngine {
             config: RwLock::new(config),
             events,
             jobs: OnceLock::new(),
+            pause: Mutex::new(None),
         });
 
         if !inline {
@@ -368,6 +415,44 @@ impl CorrectionEngine {
     #[must_use]
     pub fn is_correcting(&self) -> bool {
         self.suppress.load(Ordering::SeqCst)
+    }
+
+    /// Текущая пауза: `None` — не на паузе, `Some(None)` — до перезапуска,
+    /// `Some(Some(remaining))` — осталось времени.
+    #[must_use]
+    pub fn pause_remaining(&self) -> Option<Option<Duration>> {
+        let mut slot = self.pause.lock().unwrap_or_else(PoisonError::into_inner);
+        if slot.is_some_and(PauseKind::expired) {
+            *slot = None;
+            return None;
+        }
+        slot.map(PauseKind::remaining)
+    }
+
+    /// Стоит ли коррекция на паузе (с автоснятием по таймеру).
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.pause_remaining().is_some()
+    }
+
+    /// Поставить паузу на `duration` (или до перезапуска при `None`).
+    ///
+    /// Очередь очищается: иначе после снятия паузы хоткей исправил бы слово
+    /// из окна, которое давно потеряло фокус.
+    pub fn pause_for(&self, duration: Option<Duration>) {
+        let kind = duration.map_or(PauseKind::Forever, |d| PauseKind::Until(Instant::now() + d));
+        *self.pause.lock().unwrap_or_else(PoisonError::into_inner) = Some(kind);
+        {
+            let mut state = self.lock_state();
+            self.clear_queue_locked(&mut state, "коррекция на паузе");
+        }
+        tracing::info!(target: "klavium", "пауза коррекции: {}", pause_text(duration));
+    }
+
+    /// Снять паузу.
+    pub fn resume(&self) {
+        *self.pause.lock().unwrap_or_else(PoisonError::into_inner) = None;
+        tracing::info!(target: "klavium", "пауза коррекции снята");
     }
 
     /// Обновить настройки движка на лету (из окна настроек).
@@ -432,6 +517,10 @@ impl CorrectionEngine {
         if self.is_correcting() {
             return true;
         }
+        // Пауза: клавиши не трогаем и ничего не накапливаем.
+        if self.is_paused() {
+            return false;
+        }
 
         // Хоткей исправления — единственное, что нужно решить сразу.
         let config = self.config();
@@ -461,8 +550,8 @@ impl CorrectionEngine {
         if key.extra_info == INJECT_EXTRA_INFO || !key.is_down {
             return;
         }
-        // Пока событие ехало в очередь, могла начаться коррекция.
-        if self.is_correcting() {
+        // Пока событие ехало в очередь, могла начаться коррекция или пауза.
+        if self.is_correcting() || self.is_paused() {
             return;
         }
         if key.vk_code == VK_BACK {
@@ -712,6 +801,12 @@ impl CorrectionEngine {
             return;
         }
 
+        // Правила приложения: в «не исправлять» слово не анализируем вообще.
+        let app_mode = self.app_mode(&config);
+        if app_mode == Some(AppRuleMode::Off) {
+            return;
+        }
+
         let word_layout = word_layout.or_else(|| self.io.current_layout());
         let context_refs: Vec<&str> = context.iter().map(String::as_str).collect();
         let result = smart_correction(&word, &context_refs, word_layout);
@@ -745,6 +840,10 @@ impl CorrectionEngine {
         if result.confidence < config.threshold {
             return;
         }
+        // «Только по хоткею»: слово уже в очереди, но без подсказки и авто.
+        if app_mode == Some(AppRuleMode::Manual) {
+            return;
+        }
         if config.auto_correct {
             self.submit_job(Job::Correct { id });
         } else {
@@ -756,6 +855,15 @@ impl CorrectionEngine {
                 screen,
             });
         }
+    }
+
+    /// Режим коррекции для активного окна (по правилам приложений).
+    fn app_mode(&self, config: &EngineConfig) -> Option<AppRuleMode> {
+        if config.app_rules.is_empty() {
+            return None;
+        }
+        let exe = self.io.foreground_exe()?;
+        apprules::mode_for(&config.app_rules, &exe)
     }
 
     /// F8: исправить очередь для текущего поля (одиночная или пакетная коррекция).
@@ -1328,6 +1436,8 @@ mod tests {
         modifiers: Modifiers,
         /// Выделенный текст для тестов исправления выделенного.
         selection: Option<String>,
+        /// Процесс активного окна — для правил приложений.
+        exe: Option<String>,
     }
 
     struct MockIo(Mutex<MockIoState>);
@@ -1343,6 +1453,7 @@ mod tests {
                 ops: Vec::new(),
                 modifiers: Modifiers::default(),
                 selection: None,
+                exe: None,
             }))
         }
 
@@ -1361,9 +1472,16 @@ mod tests {
         fn set_selection(&self, text: Option<&str>) {
             self.0.lock().unwrap().selection = text.map(str::to_string);
         }
+
+        fn set_exe(&self, exe: Option<&str>) {
+            self.0.lock().unwrap().exe = exe.map(str::to_string);
+        }
     }
 
     impl EngineIo for MockIo {
+        fn foreground_exe(&self) -> Option<String> {
+            self.0.lock().unwrap().exe.clone()
+        }
         fn copy_selection(&self) -> Option<String> {
             self.0.lock().unwrap().selection.clone()
         }
@@ -1405,11 +1523,17 @@ mod tests {
     }
 
     fn make_engine() -> (Arc<CorrectionEngine>, Arc<MockIo>, Receiver<EngineEvent>) {
+        make_engine_with(EngineConfig::default())
+    }
+
+    fn make_engine_with(
+        config: EngineConfig,
+    ) -> (Arc<CorrectionEngine>, Arc<MockIo>, Receiver<EngineEvent>) {
         let io = Arc::new(MockIo::new());
         let (tx, rx) = mpsc::channel();
         let config = EngineConfig {
             run_jobs_inline: true,
-            ..EngineConfig::default()
+            ..config
         };
         let engine = CorrectionEngine::spawn(io.clone(), config, tx);
         (engine, io, rx)
@@ -1581,6 +1705,93 @@ mod tests {
                 .any(|op| matches!(op, Op::Text(text) if text == "ghbdtn dctv ")),
             "ops: {undo:?}"
         );
+    }
+
+    #[test]
+    fn test_app_rule_off_stops_detection() {
+        let config = EngineConfig {
+            app_rules: vec![AppRule::new("notepad", AppRuleMode::Off)],
+            ..EngineConfig::default()
+        };
+        let (engine, io, events) = make_engine_with(config);
+        io.set_exe(Some("notepad"));
+        press_str(&engine, "ghbdtn ");
+        assert_eq!(engine.pending_errors_count(), 0, "в исключении не копим");
+        while let Ok(event) = events.try_recv() {
+            assert!(
+                !matches!(event, EngineEvent::ErrorDetected { .. }),
+                "подсказка не должна появляться: {event:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_app_rule_manual_keeps_queue_without_hint() {
+        let config = EngineConfig {
+            app_rules: vec![AppRule::new("*code*", AppRuleMode::Manual)],
+            ..EngineConfig::default()
+        };
+        let (engine, io, events) = make_engine_with(config);
+        io.set_exe(Some("vscode"));
+        press_str(&engine, "ghbdtn ");
+        assert_eq!(engine.pending_errors_count(), 1, "слово ждёт хоткея");
+        loop {
+            match events.recv_timeout(Duration::from_millis(200)) {
+                Ok(EngineEvent::WordStarted { .. }) => {}
+                Ok(other) => panic!("подсказка не должна появляться: {other:?}"),
+                Err(_) => break,
+            }
+        }
+    }
+
+    #[test]
+    fn test_app_rules_do_not_affect_other_apps() {
+        let config = EngineConfig {
+            app_rules: vec![AppRule::new("code", AppRuleMode::Off)],
+            ..EngineConfig::default()
+        };
+        let (engine, io, _events) = make_engine_with(config);
+        io.set_exe(Some("notepad"));
+        press_str(&engine, "ghbdtn ");
+        assert_eq!(engine.pending_errors_count(), 1);
+    }
+
+    #[test]
+    fn test_pause_blocks_keys_and_expires() {
+        let (engine, _io, _events) = make_engine();
+        engine.pause_for(Some(Duration::from_secs(600)));
+        assert!(engine.is_paused());
+
+        press_str(&engine, "ghbdtn ");
+        assert_eq!(engine.pending_errors_count(), 0, "на паузе не копим");
+
+        engine.resume();
+        assert!(!engine.is_paused());
+        press_str(&engine, "ghbdtn ");
+        assert_eq!(
+            engine.pending_errors_count(),
+            1,
+            "после снятия — снова работает"
+        );
+    }
+
+    #[test]
+    fn test_pause_forever_and_instant_expiry() {
+        let (engine, _io, _events) = make_engine();
+        engine.pause_for(None);
+        assert_eq!(engine.pause_remaining(), Some(None));
+
+        engine.pause_for(Some(Duration::ZERO));
+        assert!(!engine.is_paused(), "нулевая пауза истекает сразу");
+    }
+
+    #[test]
+    fn test_pause_clears_pending_queue() {
+        let (engine, _io, _events) = make_engine();
+        press_str(&engine, "ghbdtn ");
+        assert_eq!(engine.pending_errors_count(), 1);
+        engine.pause_for(Some(Duration::from_secs(60)));
+        assert_eq!(engine.pending_errors_count(), 0, "очередь очищается");
     }
 
     #[test]
