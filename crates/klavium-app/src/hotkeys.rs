@@ -15,6 +15,8 @@ pub struct CompiledHotkeys {
     pub correction_apply: Option<Hotkey>,
     /// Отменить последнее исправление.
     pub correction_undo: Option<Hotkey>,
+    /// Исправить выделенный текст.
+    pub correction_selection: Option<Hotkey>,
     /// Скрыть карточку «было → станет».
     pub card_hide: Option<Hotkey>,
     /// Включить/выключить голосовой ввод.
@@ -35,6 +37,7 @@ impl CompiledHotkeys {
         Self {
             correction_apply: parse_spec(&config.hotkeys.correction_apply),
             correction_undo: parse_spec(&config.hotkeys.correction_undo),
+            correction_selection: parse_spec(&config.hotkeys.correction_selection),
             card_hide: parse_spec(&config.hotkeys.card_hide),
             voice_toggle: parse_spec(&config.hotkeys.voice_toggle),
             quit: parse_spec(&config.hotkeys.quit),

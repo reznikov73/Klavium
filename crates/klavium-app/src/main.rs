@@ -517,6 +517,16 @@ fn install_hook(
             return hook::HookDecision::Suppress;
         }
 
+        // Исправить выделенный текст (через буфер обмена).
+        if hotkeys
+            .correction_selection
+            .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
+        {
+            tracing::debug!(target: "klavium", "хоткей: исправить выделенное");
+            engine.request_fix_selection();
+            return hook::HookDecision::Suppress;
+        }
+
         // «Немые» клавиши (key-up без нажатия) дальше не нужны:
         // движок коррекции смотрит только настоящие нажатия.
         if !event.is_down {

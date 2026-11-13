@@ -117,6 +117,10 @@ impl EngineIo for PlatformIo {
         inject::paste_text(text).is_ok()
     }
 
+    fn copy_selection(&self) -> Option<String> {
+        inject::copy_selection()
+    }
+
     fn modifiers(&self) -> Modifiers {
         current_modifiers()
     }

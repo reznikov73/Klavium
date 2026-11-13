@@ -1358,15 +1358,17 @@ fn draw_hotkey_state(ui: &mut egui::Ui, spec: &str, capturing: bool, stop_captur
 enum HotkeyField {
     CorrectionApply,
     CorrectionUndo,
+    CorrectionSelection,
     CardHide,
     VoiceToggle,
     Quit,
 }
 
 impl HotkeyField {
-    const ALL: [Self; 5] = [
+    const ALL: [Self; 6] = [
         Self::CorrectionApply,
         Self::CorrectionUndo,
+        Self::CorrectionSelection,
         Self::CardHide,
         Self::VoiceToggle,
         Self::Quit,
@@ -1376,6 +1378,7 @@ impl HotkeyField {
         match self {
             Self::CorrectionApply => "Применить исправление",
             Self::CorrectionUndo => "Отменить исправление",
+            Self::CorrectionSelection => "Исправить выделенное",
             Self::CardHide => "Скрыть подсказку",
             Self::VoiceToggle => "Голосовой ввод",
             Self::Quit => "Выход из Klavium",
@@ -1387,6 +1390,9 @@ impl HotkeyField {
             Self::CorrectionApply => "Срабатывает, только когда есть что исправлять.",
             Self::CorrectionUndo => {
                 "Возвращает исходное слово и раскладку после исправления (до минуты)."
+            }
+            Self::CorrectionSelection => {
+                "Перекодирует выделенный текст через буфер обмена (выделение — Ctrl+A и т.п.)."
             }
             Self::CardHide => {
                 "Прячет карточку «было → станет»; без подсказки клавиша работает как обычно."
@@ -1400,6 +1406,7 @@ impl HotkeyField {
         match self {
             Self::CorrectionApply => "F8",
             Self::CorrectionUndo => "Ctrl+Alt+Z",
+            Self::CorrectionSelection => "Ctrl+Alt+X",
             Self::CardHide => "Esc",
             Self::VoiceToggle => "F9",
             Self::Quit => "Ctrl+Shift+Q",
@@ -1410,6 +1417,7 @@ impl HotkeyField {
         match self {
             Self::CorrectionApply => config.hotkeys.correction_apply.as_str(),
             Self::CorrectionUndo => config.hotkeys.correction_undo.as_str(),
+            Self::CorrectionSelection => config.hotkeys.correction_selection.as_str(),
             Self::CardHide => config.hotkeys.card_hide.as_str(),
             Self::VoiceToggle => config.hotkeys.voice_toggle.as_str(),
             Self::Quit => config.hotkeys.quit.as_str(),
@@ -1420,6 +1428,7 @@ impl HotkeyField {
         match self {
             Self::CorrectionApply => &mut config.hotkeys.correction_apply,
             Self::CorrectionUndo => &mut config.hotkeys.correction_undo,
+            Self::CorrectionSelection => &mut config.hotkeys.correction_selection,
             Self::CardHide => &mut config.hotkeys.card_hide,
             Self::VoiceToggle => &mut config.hotkeys.voice_toggle,
             Self::Quit => &mut config.hotkeys.quit,

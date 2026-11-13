@@ -9,11 +9,12 @@ use std::time::Duration;
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-    VIRTUAL_KEY, VK_BACK, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL,
+    VIRTUAL_KEY, VK_BACK, VK_C, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL,
     VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_TAB, VK_V,
 };
 
 use crate::hook::{is_key_pressed, INJECT_EXTRA_INFO};
+use windows_sys::Win32::System::DataExchange::GetClipboardSequenceNumber;
 
 /// Собрать событие клавиатуры с меткой Klavium.
 fn key_input(vk: VIRTUAL_KEY, scan: u16, flags: u32) -> INPUT {
@@ -167,6 +168,35 @@ pub fn send_backspaces(count: u32, delay: Duration) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Прочитать выделенный текст через буфер (`Ctrl+C`).
+///
+/// `None`, если приложение не отдало выделение: номер последовательности
+/// буфера не изменился после `Ctrl+C` (сравнение содержимого ломалось бы на
+/// повторном копировании того же текста).
+#[must_use]
+pub fn copy_selection() -> Option<String> {
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    let before_seq = unsafe { GetClipboardSequenceNumber() };
+
+    release_modifiers();
+    // Ctrl+C одной пачкой — так же, как Ctrl+V (см. paste_text).
+    send_inputs(&[
+        key_input(VK_CONTROL, 0, 0),
+        key_input(VK_C, 0, 0),
+        key_input(VK_C, 0, KEYEVENTF_KEYUP),
+        key_input(VK_CONTROL, 0, KEYEVENTF_KEYUP),
+    ])
+    .ok()?;
+    sleep(Duration::from_millis(120));
+
+    let after_seq = unsafe { GetClipboardSequenceNumber() };
+    if after_seq == before_seq {
+        return None;
+    }
+    let text = clipboard.get_text().ok()?;
+    (!text.trim().is_empty()).then_some(text)
+}
+
 /// Вставить текст через буфер обмена (`Ctrl+V`).
 ///
 /// Быстрый путь для длинных фраз: вместо посимвольного ввода — один `Ctrl+V`.
@@ -183,11 +213,14 @@ pub fn paste_text(text: &str) -> anyhow::Result<()> {
     clipboard.set_text(text)?;
 
     release_modifiers();
-    send_key_down(VK_CONTROL)?;
-    sleep(Duration::from_millis(20));
-    press_key(VK_V)?;
-    sleep(Duration::from_millis(20));
-    send_key_up(VK_CONTROL)?;
+    // Всю последовательность Ctrl+V отправляем одной пачкой: отдельные вызовы
+    // с паузами иногда успевают «потерять» модификатор, и в поле уходит «v».
+    send_inputs(&[
+        key_input(VK_CONTROL, 0, 0),
+        key_input(VK_V, 0, 0),
+        key_input(VK_V, 0, KEYEVENTF_KEYUP),
+        key_input(VK_CONTROL, 0, KEYEVENTF_KEYUP),
+    ])?;
     sleep(Duration::from_millis(120));
 
     // Не затираем то, что пользователь успел скопировать за эти 120 мс.

@@ -80,6 +80,10 @@ pub trait EngineIo: Send + Sync {
     fn paste_text(&self, _text: &str) -> bool {
         false
     }
+    /// Прочитать выделенный текст (`Ctrl+C` в буфер). `None` — выделения нет.
+    fn copy_selection(&self) -> Option<String> {
+        None
+    }
     /// Текущее состояние модификаторов.
     fn modifiers(&self) -> Modifiers;
 }
@@ -240,6 +244,7 @@ enum Job {
         id: u64,
     },
     Undo,
+    FixSelection,
     VoiceInsert {
         text: String,
     },
@@ -394,6 +399,11 @@ impl CorrectionEngine {
         self.submit_job(Job::Undo);
     }
 
+    /// Исправить выделенный текст (через буфер). Неблокирующе.
+    pub fn request_fix_selection(&self) {
+        self.submit_job(Job::FixSelection);
+    }
+
     /// Вставить продиктованный текст (голосовая вставка). Неблокирующе.
     ///
     /// Выполняется в воркере под тем же подавлением физического ввода, что и
@@ -499,6 +509,7 @@ impl CorrectionEngine {
                 let _ = self.perform_correction(id);
             }
             Job::Undo => self.undo_last(),
+            Job::FixSelection => self.perform_fix_selection(),
             Job::VoiceInsert { text } => self.perform_voice_insert(&text),
             Job::Key(key) => self.handle_key(&key),
         }
@@ -993,6 +1004,30 @@ impl CorrectionEngine {
         }
     }
 
+    /// Исправить выделенный текст: скопировать, перекодировать, вставить.
+    fn perform_fix_selection(&self) {
+        // Копируем в текущем фокусе: выделение уже там, куда смотрит пользователь.
+        let Some(selected) = self.io.copy_selection() else {
+            tracing::debug!(target: "klavium", "выделенное: пусто — нечего исправлять");
+            return;
+        };
+        let Some(converted) = fix_selection_text(&selected) else {
+            tracing::info!(target: "klavium", "выделенное: раскладка не определена — пропуск");
+            return;
+        };
+        let target = self.io.capture_target();
+        let _guard = SuppressGuard::new(&self.suppress);
+        let _ = self.io.restore_target(&target);
+        let pasted = self.io.paste_text(&converted);
+        if !pasted {
+            self.io.send_text(&converted);
+        }
+        tracing::info!(
+            target: "klavium",
+            "выделенное исправлено: «{selected}» → «{converted}»"
+        );
+    }
+
     /// Забыть последнее исправление (после пакетной правки отмена не имеет смысла).
     fn clear_last_correction(&self) {
         if let Ok(mut slot) = self.last_correction.lock() {
@@ -1159,6 +1194,26 @@ const fn is_cyrillic(c: char) -> bool {
     matches!(c, 'а'..='я' | 'А'..='Я' | 'ё' | 'Ё')
 }
 
+/// Перекодировать выделенный текст в другую раскладку.
+///
+/// Работает только при уверенном определении языка: смесь латиницы и кириллицы
+/// или слишком короткий фрагмент — `None` (лучше не трогать, чем испортить).
+#[must_use]
+fn fix_selection_text(text: &str) -> Option<String> {
+    if text.trim().is_empty() {
+        return None;
+    }
+    let (layout, confidence) = detect_language(text);
+    if confidence < 0.6 {
+        return None;
+    }
+    let converted = match layout? {
+        Layout::En => convert::convert_text(text),
+        Layout::Ru => convert::convert_text_reverse(text),
+    };
+    (converted != text).then_some(converted)
+}
+
 /// Целевая раскладка по различию языков оригинала и исправления.
 fn detect_target_layout(original: &str, corrected: &str) -> Option<Layout> {
     let (original_lang, _) = detect_language(original);
@@ -1254,6 +1309,8 @@ mod tests {
         target: StoredTarget,
         ops: Vec<Op>,
         modifiers: Modifiers,
+        /// Выделенный текст для тестов исправления выделенного.
+        selection: Option<String>,
     }
 
     struct MockIo(Mutex<MockIoState>);
@@ -1268,6 +1325,7 @@ mod tests {
                 },
                 ops: Vec::new(),
                 modifiers: Modifiers::default(),
+                selection: None,
             }))
         }
 
@@ -1282,9 +1340,16 @@ mod tests {
         fn set_target_window(&self, window: usize) {
             self.0.lock().unwrap().target.window = window;
         }
+
+        fn set_selection(&self, text: Option<&str>) {
+            self.0.lock().unwrap().selection = text.map(str::to_string);
+        }
     }
 
     impl EngineIo for MockIo {
+        fn copy_selection(&self) -> Option<String> {
+            self.0.lock().unwrap().selection.clone()
+        }
         fn capture_target(&self) -> StoredTarget {
             self.0.lock().unwrap().target
         }
@@ -1436,6 +1501,48 @@ mod tests {
         engine.request_undo();
         assert_eq!(io.ops().len(), before, "в чужом окне ничего не вводим");
         assert!(!engine.can_undo());
+    }
+
+    #[test]
+    fn test_fix_selection_text_converts_both_ways() {
+        assert_eq!(
+            fix_selection_text("ghbdtn dctv"),
+            Some("привет всем".to_string())
+        );
+        assert_eq!(
+            fix_selection_text("привет всем"),
+            Some("ghbdtn dctv".to_string())
+        );
+    }
+
+    #[test]
+    fn test_fix_selection_text_skips_ambiguous_and_empty() {
+        assert_eq!(fix_selection_text(""), None);
+        assert_eq!(fix_selection_text("    "), None);
+        // Смесь латиницы и кириллицы — не трогаем.
+        assert_eq!(fix_selection_text("ghbdtn привет"), None);
+    }
+
+    #[test]
+    fn test_selection_fix_uses_clipboard_text() {
+        let (engine, io, _events) = make_engine();
+        io.set_selection(Some("ghbdtn dctv"));
+        engine.request_fix_selection();
+        let ops = io.ops();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "привет всем")),
+            "ops: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn test_selection_fix_is_noop_without_selection() {
+        let (engine, io, _events) = make_engine();
+        io.set_selection(None);
+        let before = io.ops().len();
+        engine.request_fix_selection();
+        assert_eq!(io.ops().len(), before, "без выделения ничего не вводим");
     }
 
     #[test]
