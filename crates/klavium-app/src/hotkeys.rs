@@ -25,6 +25,8 @@ pub struct CompiledHotkeys {
     pub quit: Option<Hotkey>,
     /// Голосовой ввод включён — хук проверяет это без чтения общего конфига.
     pub voice_enabled: bool,
+    /// Диктовка по удержанию (push-to-talk) вместо переключателя.
+    pub voice_push: bool,
 }
 
 impl CompiledHotkeys {
@@ -42,6 +44,7 @@ impl CompiledHotkeys {
             voice_toggle: parse_spec(&config.hotkeys.voice_toggle),
             quit: parse_spec(&config.hotkeys.quit),
             voice_enabled: config.voice.enabled,
+            voice_push: config.voice.mode == "push",
         }
     }
 }

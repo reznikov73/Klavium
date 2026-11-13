@@ -304,6 +304,9 @@ pub struct VoiceConfig {
     pub vosk_model_path: String,
     /// Вставлять длинные фразы через буфер обмена (Ctrl+V), а не посимвольно.
     pub paste_long_text: bool,
+    /// Режим клавиши диктовки: `toggle` (нажал — говорите, повторно — стоп)
+    /// или `push` (удерживать).
+    pub mode: String,
 }
 
 impl Default for VoiceConfig {
@@ -317,6 +320,7 @@ impl Default for VoiceConfig {
             auto_capitalize: true,
             vosk_model_path: String::new(),
             paste_long_text: true,
+            mode: "toggle".to_string(),
         }
     }
 }

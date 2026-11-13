@@ -11,6 +11,7 @@
 
 pub mod audio;
 pub mod engines;
+pub mod push;
 pub mod whisper;
 pub mod worker;
 
@@ -53,6 +54,10 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 pub(crate) enum VoiceInbound {
     /// Переключить диктовку.
     Toggle,
+    /// Push-to-talk: клавиша нажата — начать запись.
+    PushStart,
+    /// Push-to-talk: клавиша отпущена — остановить и распознать.
+    PushStop,
     /// Готовая фраза распознавания.
     Phrase(String),
     /// Не удалось открыть/читать микрофон.
@@ -130,6 +135,23 @@ impl VoiceService {
     /// Переключить диктовку (вкл/выкл). Неблокирующе.
     pub fn toggle(&self) {
         let _ = self.tx.send(VoiceInbound::Toggle);
+    }
+
+    /// Push-to-talk: клавиша нажата — начать запись (повтор игнорируется).
+    pub fn push_start(&self) {
+        let _ = self.tx.send(VoiceInbound::PushStart);
+    }
+
+    /// Push-to-talk: клавиша отпущена — остановить запись и распознать.
+    pub fn push_stop(&self) {
+        let _ = self.tx.send(VoiceInbound::PushStop);
+    }
+
+    /// Остановить диктовку, если она идёт (выход из режима, выключение фичи).
+    pub fn stop_if_active(&self) {
+        if self.is_active() {
+            let _ = self.tx.send(VoiceInbound::PushStop);
+        }
     }
 
     /// Попросить перечитать настройки и пересоздать движок (после сохранения).
@@ -230,6 +252,22 @@ fn manager_loop(
                     test_snapshot,
                 );
             }
+            Ok(VoiceInbound::PushStart) => {
+                handle_push_start(
+                    &worker,
+                    worker_tx,
+                    deps,
+                    active_flag,
+                    &mut state,
+                    test_snapshot,
+                );
+            }
+            Ok(VoiceInbound::PushStop) => {
+                if state.session.is_some() {
+                    stop_session(&mut state.session, deps, active_flag);
+                    state.paused = false;
+                }
+            }
             Ok(VoiceInbound::Phrase(text)) => {
                 handle_phrase(text, deps, active_flag, &mut state, test_snapshot);
             }
@@ -279,6 +317,35 @@ fn handle_toggle(
             state.session = start_session(worker, deps, active_flag, worker_tx);
             state.paused = false;
             state.last_char = None;
+        }
+        not_ready => show_not_ready_badge(deps, &not_ready),
+    }
+}
+
+/// Push-to-talk: начать запись, если диктовка ещё не идёт.
+fn handle_push_start(
+    worker: &RecognitionWorker,
+    worker_tx: &Sender<VoiceInbound>,
+    deps: &VoiceDeps,
+    active_flag: &Arc<AtomicBool>,
+    state: &mut ManagerState,
+    test_snapshot: &Arc<Mutex<RecognitionTest>>,
+) {
+    // Тест распознавания главнее: его не перебиваем.
+    if state.mic_test.is_some() || lock(test_snapshot).waiting_engine {
+        return;
+    }
+    if state.session.is_some() {
+        return;
+    }
+    match worker.status() {
+        EngineStatus::Ready(_) => {
+            state.session = start_session(worker, deps, active_flag, worker_tx);
+            state.paused = false;
+            state.last_char = None;
+            if state.session.is_some() {
+                deps.overlay.show_badge("ГОВОРИТЕ", BADGE_COLOR_ACTIVE);
+            }
         }
         not_ready => show_not_ready_badge(deps, &not_ready),
     }

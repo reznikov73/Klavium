@@ -371,6 +371,7 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
         on_save: Box::new(move |new_config: AppConfig| -> Result<(), String> {
             config_io::save(&ui.config_path, &new_config).map_err(|error| error.to_string())?;
             save_engine.update_config(runtime::engine_config(&new_config));
+            let saved_voice_enabled = new_config.voice.enabled;
             *save_shared
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = new_config.clone();
@@ -381,6 +382,10 @@ fn run_settings(ui: UiContext) -> anyhow::Result<()> {
             sync_autostart(&new_config);
             real_io::apply_typing_speed(&new_config);
             voice_reload.reload(); // движок перечитает настройки на лету
+            if !saved_voice_enabled {
+                // Фичу выключили — не оставляем висящую сессию записи.
+                voice_reload.stop_if_active();
+            }
             tracing::info!(target: "klavium", "настройки сохранены");
             Ok(())
         }),
@@ -433,10 +438,25 @@ fn install_hook(
     // Зажатые клавиши: key-up без парного key-down — «немая» клавиша
     // (Pause присылает только отпускание) — по ней хоткеи тоже срабатывают.
     let held_keys = Arc::new(Mutex::new(HeldKeys::default()));
+    // Состояние push-to-talk: отпускание клавиши диктовки приходит
+    // отдельным событием и не должно теряться в `fires`.
+    let push = Arc::new(Mutex::new(voice::push::PushToTalk::new()));
     hook::install(move |event| {
         if event.extra_info == hook::INJECT_EXTRA_INFO {
             return hook::HookDecision::Propagate;
         }
+
+        // Push-to-talk: нажал — говорите, отпустил — распознавание.
+        {
+            let hotkeys = *compiled
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if handle_push_key(&event, &hotkeys, &push, &voice) {
+                // Клавишу забираем: иначе отпускание уйдёт в поле ввода.
+                return hook::HookDecision::Suppress;
+            }
+        }
+
         // Событие «похоже на нажатие»: либо key-down, либо key-up «немой»
         // клавиши (Pause и др.), у которой нажатия не бывает.
         let fires = held_keys.lock().map_or(event.is_down, |mut held| {
@@ -497,7 +517,8 @@ fn install_hook(
         }
 
         // Голосовой ввод — только когда фича включена в настройках
-        if hotkeys.voice_enabled
+        if !hotkeys.voice_push
+            && hotkeys.voice_enabled
             && hotkeys
                 .voice_toggle
                 .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
@@ -507,37 +528,9 @@ fn install_hook(
             return hook::HookDecision::Suppress;
         }
 
-        // Хоткей исправления обрабатываем и в своём окне: сразу после
-        // назначения его естественно проверить в настройках.
-        if hotkeys
-            .correction_apply
-            .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
-            && engine.pending_errors_count() > 0
-        {
-            tracing::debug!(target: "klavium", "хоткей: применить исправление");
-            engine.request_apply();
-            return hook::HookDecision::Suppress;
-        }
-
-        // Отмена последнего исправления: тихо игнорируем, если отменять нечего.
-        if hotkeys
-            .correction_undo
-            .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
-            && engine.can_undo()
-        {
-            tracing::debug!(target: "klavium", "хоткей: отменить исправление");
-            engine.request_undo();
-            return hook::HookDecision::Suppress;
-        }
-
-        // Исправить выделенный текст (через буфер обмена).
-        if hotkeys
-            .correction_selection
-            .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
-        {
-            tracing::debug!(target: "klavium", "хоткей: исправить выделенное");
-            engine.request_fix_selection();
-            return hook::HookDecision::Suppress;
+        // Хоткеи исправления (применить/отменить/выделенное).
+        if let Some(decision) = handle_correction_hotkeys(&event, &hotkeys, &engine, modifiers) {
+            return decision;
         }
 
         // «Немые» клавиши (key-up без нажатия) дальше не нужны:
@@ -558,6 +551,93 @@ fn install_hook(
             hook::HookDecision::Propagate
         }
     })
+}
+
+/// Push-to-talk: обработать событие клавиши диктовки.
+///
+/// `true` — событие наше (клавишу нужно забрать у приложения).
+fn handle_push_key(
+    event: &hook::KeyEvent,
+    hotkeys: &CompiledHotkeys,
+    push: &Mutex<voice::push::PushToTalk>,
+    voice: &Arc<voice::VoiceService>,
+) -> bool {
+    if !(hotkeys.voice_enabled && hotkeys.voice_push) {
+        return false;
+    }
+    let Some(hotkey) = hotkeys.voice_toggle else {
+        return false;
+    };
+    if !hotkey.trigger().matches(event.vk_code, event.scan_code) {
+        return false;
+    }
+
+    let action = {
+        let mut state = push
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if event.is_down {
+            state.on_down()
+        } else {
+            state.on_up()
+        }
+    };
+    match action {
+        voice::push::PushAction::Start => {
+            tracing::debug!(target: "klavium", "хоткей: диктовка (удержание) — старт");
+            voice.push_start();
+        }
+        voice::push::PushAction::Stop => {
+            tracing::debug!(target: "klavium", "хоткей: диктовка (удержание) — стоп");
+            voice.push_stop();
+        }
+        voice::push::PushAction::Ignore => {}
+    }
+    true
+}
+
+/// Хоткеи исправления: применить, отменить, исправить выделенное.
+///
+/// `Some(decision)` — клавиша наша; `None` — пусть идёт дальше.
+fn handle_correction_hotkeys(
+    event: &hook::KeyEvent,
+    hotkeys: &CompiledHotkeys,
+    engine: &CorrectionEngine,
+    modifiers: klavium_core::hotkeys::Mods,
+) -> Option<hook::HookDecision> {
+    // Хоткей исправления обрабатываем и в своём окне: сразу после
+    // назначения его естественно проверить в настройках.
+    if hotkeys
+        .correction_apply
+        .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
+        && engine.pending_errors_count() > 0
+    {
+        tracing::debug!(target: "klavium", "хоткей: применить исправление");
+        engine.request_apply();
+        return Some(hook::HookDecision::Suppress);
+    }
+
+    // Отмена последнего исправления: тихо игнорируем, если отменять нечего.
+    if hotkeys
+        .correction_undo
+        .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
+        && engine.can_undo()
+    {
+        tracing::debug!(target: "klavium", "хоткей: отменить исправление");
+        engine.request_undo();
+        return Some(hook::HookDecision::Suppress);
+    }
+
+    // Исправить выделенный текст (через буфер обмена).
+    if hotkeys
+        .correction_selection
+        .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
+    {
+        tracing::debug!(target: "klavium", "хоткей: исправить выделенное");
+        engine.request_fix_selection();
+        return Some(hook::HookDecision::Suppress);
+    }
+    None
 }
 
 /// Модификатор: его нажатие не назначаем (клавиша назначается вместе с ним).

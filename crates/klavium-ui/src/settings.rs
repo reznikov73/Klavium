@@ -1568,14 +1568,14 @@ impl SettingsApp {
 
     fn draw_voice(&mut self, ui: &mut egui::Ui) {
         let hotkey = hotkey_label(&self.config.hotkeys.voice_toggle);
+        let push_mode = self.config.voice.mode == "push";
         let (active, status) = (self.voice_snapshot)();
 
+        let hint = voice_hint(&hotkey, push_mode);
         ui.label(
-            RichText::new(format!(
-                "Включение диктовки — {hotkey}. Клавиша меняется в разделе «Горячие клавиши»."
-            ))
-            .size(theme::TEXT_CAPTION)
-            .color(theme::TEXT_SECONDARY),
+            RichText::new(hint)
+                .size(theme::TEXT_CAPTION)
+                .color(theme::TEXT_SECONDARY),
         );
         ui.add_space(theme::SPACE_3);
 
@@ -1586,6 +1586,21 @@ impl SettingsApp {
             "Голосовой ввод",
             Some("Диктовка в любое поле ввода"),
             |ui| widgets::switch(ui, enabled),
+        );
+        widgets::row_separator(ui);
+
+        let mode = &mut voice.mode;
+        widgets::setting_row(
+            ui,
+            "Клавиша диктовки",
+            Some("Переключатель — нажали и говорите; удержание — пока держите клавишу"),
+            |ui| {
+                widgets::segmented(
+                    ui,
+                    &[("toggle", "Переключатель"), ("push", "Удержание")],
+                    mode,
+                )
+            },
         );
         widgets::row_separator(ui);
 
@@ -1855,6 +1870,15 @@ fn human_ago(started_at: u64) -> String {
         format!("{} ч назад", diff / 3600)
     } else {
         format!("{} дн назад", diff / 86_400)
+    }
+}
+
+/// Подсказка над настройками голоса: зависит от режима клавиши.
+fn voice_hint(hotkey: &str, push_mode: bool) -> String {
+    if push_mode {
+        format!("Удерживайте {hotkey}, пока говорите: текст вставится после отпускания.")
+    } else {
+        format!("Включение диктовки — {hotkey}. Клавиша меняется в разделе «Горячие клавиши».")
     }
 }
 
