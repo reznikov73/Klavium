@@ -308,6 +308,16 @@ pub fn smart_correction(
         return result;
     }
 
+    // Словарь пользователя: стоп-слово не исправляем никогда, а своё слово
+    // считаем осмысленным в текущей раскладке.
+    let lowered = cleaned_original.to_lowercase();
+    {
+        let dicts = Dictionaries::get();
+        if dicts.is_forbidden(&lowered) || dicts.user_contains(&lowered) {
+            return result;
+        }
+    }
+
     let is_original_ru = is_meaningful_russian(&cleaned_original);
     let is_original_en = is_meaningful_english(&cleaned_original);
     let (original_lang, _) = detect_language(&cleaned_original);

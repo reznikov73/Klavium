@@ -83,6 +83,8 @@ fn main() -> anyhow::Result<()> {
     };
 
     let paths = config_io::resolve();
+    // Словарь пользователя живёт рядом с данными приложения.
+    klavium_core::dicts::set_user_dict_path(paths.data_dir.join("user_dict.txt"));
     let config = config_io::load(&paths.config_path);
     if !paths.config_path.exists() {
         let _ = config_io::save(&paths.config_path, &config);

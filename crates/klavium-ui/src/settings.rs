@@ -594,6 +594,34 @@ impl SettingsApp {
             .size(theme::TEXT_CAPTION)
             .color(theme::TEXT_SECONDARY),
         );
+
+        ui.add_space(theme::SPACE_4);
+        ui.label(
+            RichText::new("Словарь пользователя")
+                .size(theme::TEXT_CARD_TITLE)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
+        ui.add_space(theme::SPACE_1);
+        ui.label(
+            RichText::new(
+                "Слова, которые не нужно исправлять (имена, жаргон). Строки с «!» — стоп-лист: не исправлять никогда. Файл перечитывается сам, раз в минуту.",
+            )
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_SECONDARY),
+        );
+        ui.add_space(theme::SPACE_2);
+        let user_words = klavium_core::dicts::Dictionaries::get().user_word_count();
+        ui.horizontal(|ui| {
+            if widgets::secondary_button(ui, "Открыть файл").clicked() {
+                open_user_dict(&self.data_dir);
+            }
+            ui.label(
+                RichText::new(format!("{user_words} сл."))
+                    .size(theme::TEXT_CAPTION)
+                    .color(theme::TEXT_SECONDARY),
+            );
+        });
     }
 
     /// Секция «Горячие клавиши»: назначение по нажатию, проверка и конфликты.
@@ -1512,6 +1540,21 @@ fn human_ago(started_at: u64) -> String {
     } else {
         format!("{} дн назад", diff / 86_400)
     }
+}
+
+/// Открыть словарь пользователя в Блокноте (создать с подсказкой, если нет).
+fn open_user_dict(data_dir: &std::path::Path) {
+    let path = data_dir.join("user_dict.txt");
+    if !path.exists() {
+        let template = "# Словарь пользователя Klavium.\n\
+# Одно слово в строке — такое слово никогда не исправляется.\n\
+# Строка с «!» в начале — стоп-лист: исправлять запрещено всегда.\n\
+# Пример:\n\
+# Иван\n\
+# !тест\n";
+        let _ = std::fs::write(&path, template);
+    }
+    let _ = std::process::Command::new("notepad.exe").arg(&path).spawn();
 }
 
 /// Поднять и сфокусировать уже открытое окно настроек (клик «Настройки»
