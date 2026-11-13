@@ -109,6 +109,12 @@ static CALLBACK: Mutex<Option<HookCallback>> = Mutex::new(None);
 /// до перезапуска приложения.
 static LAST_EVENT_TICK: AtomicU32 = AtomicU32::new(0);
 
+/// Сколько раз колбэк хука превысил бюджет [`SLOW_CALLBACK_MS`].
+///
+/// Зеро — здоровый хук; рост означает, что приложение близко к пределу
+/// `LowLevelHooksTimeout`, после которого Windows снимает хук.
+static SLOW_CALLBACKS: AtomicU32 = AtomicU32::new(0);
+
 /// Сколько колбэк может работать, прежде чем напишем предупреждение.
 const SLOW_CALLBACK_MS: u128 = 50;
 
@@ -160,6 +166,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
     }
     let elapsed = started.elapsed();
     if elapsed.as_millis() >= SLOW_CALLBACK_MS {
+        SLOW_CALLBACKS.fetch_add(1, Ordering::Relaxed);
         tracing::warn!(
             target: "klavium",
             "хук: колбэк занял {} мс (vk={:#04X}) — риск снятия хука системой",
@@ -291,7 +298,7 @@ fn spawn_watchdog(thread_id: u32) {
                 // в журнал: проблема видна, лечится перезапуском приложения.
                 tracing::warn!(
                     target: "klavium",
-                    "хук: клавиатура не доходит ({lag} мс) — перезапустите Klavium"
+                    "хук: возможная потеря — ввод в системе есть, клавиатура до хука не доходит ({lag} мс)"
                 );
                 let _ = thread_id;
             }
@@ -299,6 +306,37 @@ fn spawn_watchdog(thread_id: u32) {
     if spawn.is_err() {
         tracing::error!(target: "klavium", "хук: не удалось запустить сторожевой поток");
     }
+}
+
+/// Сколько раз колбэк хука превысил бюджет времени.
+#[must_use]
+pub fn slow_callback_count() -> u32 {
+    SLOW_CALLBACKS.load(Ordering::Relaxed)
+}
+
+/// Сколько миллисекунд назад хук видел последнее событие клавиатуры.
+///
+/// `None` — событий ещё не было (хук только установлен).
+#[must_use]
+pub fn last_event_age_ms() -> Option<u32> {
+    let tick = LAST_EVENT_TICK.load(Ordering::Relaxed);
+    if tick == 0 {
+        return None;
+    }
+    Some(unsafe { GetTickCount() }.wrapping_sub(tick))
+}
+
+/// Насколько системный ввод «новее» последнего события клавиатуры (мс).
+///
+/// Внимание: `GetLastInputInfo` обновляется и от мыши, поэтому значение
+/// растёт и при простом клике — для статуса в интерфейсе не годится,
+/// только для сторожа журнала.
+#[must_use]
+pub fn input_lag_ms() -> Option<u32> {
+    let system = last_input_tick()?;
+    let ours = LAST_EVENT_TICK.load(Ordering::Relaxed);
+    let lag = system.wrapping_sub(ours) as i32;
+    Some(lag.max(0).unsigned_abs())
 }
 
 /// Тик последнего ввода в системе (`GetLastInputInfo`), если доступен.

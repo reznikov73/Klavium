@@ -129,9 +129,10 @@ enum Section {
     Statistics,
     General,
     Voice,
+    Diagnostics,
 }
 
-const SECTIONS: [(Section, &str); 8] = [
+const SECTIONS: [(Section, &str); 9] = [
     (Section::Correction, "Коррекция"),
     (Section::Hotkeys, "Горячие клавиши"),
     (Section::Sounds, "Звуки"),
@@ -140,6 +141,7 @@ const SECTIONS: [(Section, &str); 8] = [
     (Section::Statistics, "Статистика"),
     (Section::General, "Общие"),
     (Section::Voice, "Голос"),
+    (Section::Diagnostics, "Диагностика"),
 ];
 
 /// Стартовая страница настроек для дымовых прогонов (`KLAVIUM_APP_SETTINGS_PAGE`).
@@ -152,6 +154,7 @@ fn initial_section() -> Section {
         Ok("statistics") => Section::Statistics,
         Ok("general") => Section::General,
         Ok("voice") => Section::Voice,
+        Ok("diagnostics") => Section::Diagnostics,
         _ => Section::Correction,
     }
 }
@@ -181,6 +184,10 @@ const fn section_header(section: Section) -> (&'static str, &'static str) {
         Section::Voice => (
             "Голосовой ввод",
             "Движок распознавания, модели и тест микрофона.",
+        ),
+        Section::Diagnostics => (
+            "Диагностика",
+            "Версия, каталог данных, активные сочетания и состояние хука — сюда смотреть, если что-то «не реагирует».",
         ),
     }
 }
@@ -520,6 +527,7 @@ impl SettingsApp {
                             Section::Statistics => self.draw_statistics(ui),
                             Section::General => self.draw_general(ui),
                             Section::Voice => self.draw_voice(ui),
+                            Section::Diagnostics => self.draw_diagnostics(ui),
                         });
                     });
             });
@@ -622,6 +630,134 @@ impl SettingsApp {
                     .color(theme::TEXT_SECONDARY),
             );
         });
+    }
+
+    /// Секция «Диагностика»: версия, данные, сочетания и состояние хука.
+    fn draw_diagnostics(&mut self, ui: &mut egui::Ui) {
+        let (active, voice_status) = (self.voice_snapshot)();
+        self.diagnostics_app(ui);
+        self.diagnostics_hotkeys(ui);
+        Self::diagnostics_state(ui, active, &voice_status);
+        ui.add_space(theme::SPACE_4);
+        ui.horizontal(|ui| {
+            if widgets::secondary_button(ui, "Открыть журнал").clicked() {
+                let log = self.data_dir.join("logs").join("app.log");
+                let _ = std::process::Command::new("notepad.exe").arg(log).spawn();
+            }
+            if widgets::secondary_button(ui, "Открыть папку данных").clicked() {
+                let _ = std::process::Command::new("explorer")
+                    .arg(&self.data_dir)
+                    .spawn();
+            }
+            if widgets::secondary_button(ui, "Копировать отчёт").clicked() {
+                ui.ctx().copy_text(self.diagnostics_report(&voice_status));
+                self.set_status("Отчёт скопирован в буфер".to_string(), false);
+            }
+        });
+    }
+
+    /// «Приложение»: версия, каталог данных и путь журнала.
+    fn diagnostics_app(&self, ui: &mut egui::Ui) {
+        diagnostics_title(ui, "Приложение");
+        read_only_row(ui, "Версия", env!("CARGO_PKG_VERSION"));
+        read_only_row(ui, "Каталог данных", &self.data_dir.display().to_string());
+        let log = self.data_dir.join("logs").join("app.log");
+        read_only_row(ui, "Журнал", &log.display().to_string());
+    }
+
+    /// «Активные сочетания»: то, что реально обрабатывает хук после сохранения.
+    fn diagnostics_hotkeys(&self, ui: &mut egui::Ui) {
+        ui.add_space(theme::SPACE_4);
+        diagnostics_title(ui, "Активные сочетания");
+        ui.label(
+            RichText::new("Значения из конфига; правки начинают действовать после «Сохранить».")
+                .size(theme::TEXT_CAPTION)
+                .color(theme::TEXT_SECONDARY),
+        );
+        ui.add_space(theme::SPACE_2);
+        for field in HotkeyField::ALL {
+            read_only_row(ui, field.title(), &hotkey_label(field.spec(&self.config)));
+        }
+    }
+
+    /// «Состояние»: хук, его последний колбэк, медленные колбэки и диктовка.
+    fn diagnostics_state(ui: &mut egui::Ui, voice_active: bool, voice_status: &str) {
+        use klavium_platform::hook;
+        ui.add_space(theme::SPACE_4);
+        diagnostics_title(ui, "Состояние");
+
+        let age = hook::last_event_age_ms();
+        let (hook_text, hook_kind) = match age {
+            Some(ms) if ms < 600_000 => (
+                "хук получает клавиатуру".to_string(),
+                widgets::BadgeKind::Ok,
+            ),
+            Some(ms) => (
+                format!("нет событий клавиатуры {} мин", ms / 60_000),
+                widgets::BadgeKind::Info,
+            ),
+            None => (
+                "ожидание первого события клавиатуры".to_string(),
+                widgets::BadgeKind::Info,
+            ),
+        };
+        widgets::badge(ui, &hook_text, hook_kind);
+        ui.add_space(theme::SPACE_2);
+
+        let last_event = match age {
+            Some(ms) if ms < 60_000 => format!("{} мс назад", ms.max(1)),
+            Some(ms) => format!("{} с назад", ms / 1000),
+            None => "событий ещё не было".to_string(),
+        };
+        read_only_row(ui, "Последний колбэк хука", &last_event);
+        let slow = hook::slow_callback_count();
+        let slow_text = if slow == 0 {
+            "0 — норма".to_string()
+        } else {
+            slow.to_string()
+        };
+        read_only_row(ui, "Медленных колбэков (>50 мс)", &slow_text);
+        ui.add_space(theme::SPACE_2);
+
+        let (voice_text, voice_kind) = if voice_active {
+            ("диктовка активна", widgets::BadgeKind::Ok)
+        } else {
+            ("диктовка выключена", widgets::BadgeKind::Info)
+        };
+        widgets::badge(ui, voice_text, voice_kind);
+        ui.add_space(theme::SPACE_1);
+        ui.label(
+            RichText::new(voice_status)
+                .size(theme::TEXT_CAPTION)
+                .color(theme::TEXT_SECONDARY),
+        );
+    }
+
+    /// Текстовый отчёт для поддержки (копируется в буфер).
+    fn diagnostics_report(&self, voice_status: &str) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        let _ = writeln!(out, "Klavium {}", env!("CARGO_PKG_VERSION"));
+        let _ = writeln!(out, "Каталог данных: {}", self.data_dir.display());
+        out.push_str("Сочетания:\n");
+        for field in HotkeyField::ALL {
+            let _ = writeln!(
+                out,
+                "  {}: {}",
+                field.title(),
+                hotkey_label(field.spec(&self.config))
+            );
+        }
+        if let Some(age) = klavium_platform::hook::last_event_age_ms() {
+            let _ = writeln!(out, "Последний колбэк хука: {age} мс назад");
+        }
+        let _ = writeln!(
+            out,
+            "Медленных колбэков: {}",
+            klavium_platform::hook::slow_callback_count()
+        );
+        let _ = writeln!(out, "Голос: {voice_status}");
+        out
     }
 
     /// Секция «Горячие клавиши»: назначение по нажатию, проверка и конфликты.
@@ -1540,6 +1676,37 @@ fn human_ago(started_at: u64) -> String {
     } else {
         format!("{} дн назад", diff / 86_400)
     }
+}
+
+/// Заголовок группы строк в разделе «Диагностика».
+fn diagnostics_title(ui: &mut egui::Ui, text: &str) {
+    ui.label(
+        RichText::new(text)
+            .size(theme::TEXT_CARD_TITLE)
+            .strong()
+            .color(theme::TEXT_PRIMARY),
+    );
+    ui.add_space(theme::SPACE_2);
+}
+
+/// Строка только для чтения: подпись слева, значение моноширинным справа.
+fn read_only_row(ui: &mut egui::Ui, title: &str, value: &str) {
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new(title)
+                .size(theme::TEXT_BODY)
+                .color(theme::TEXT_SECONDARY),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(
+                RichText::new(value)
+                    .monospace()
+                    .size(theme::TEXT_MONO)
+                    .color(theme::TEXT_PRIMARY),
+            );
+        });
+    });
+    ui.add_space(theme::SPACE_1);
 }
 
 /// Открыть словарь пользователя в Блокноте (создать с подсказкой, если нет).
