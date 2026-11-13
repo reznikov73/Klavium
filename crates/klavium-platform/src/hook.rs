@@ -114,10 +114,10 @@ const SLOW_CALLBACK_MS: u128 = 50;
 
 /// Расхождение «система видела ввод» и «хук видел событие», после которого
 /// считаем хук потерянным (мс).
-const HOOK_LOST_MS: i32 = 2000;
+const HOOK_LOST_MS: i32 = 5000;
 
 /// Не переустанавливаем хук чаще, чем раз в столько (мс).
-const REINSTALL_COOLDOWN_MS: u32 = 30_000;
+const REINSTALL_COOLDOWN_MS: u32 = 300_000;
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code < 0 {

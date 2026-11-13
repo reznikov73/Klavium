@@ -53,8 +53,10 @@ fn log_startup(paths: &config_io::DataPaths) {
 fn log_hotkeys(config: &AppConfig) {
     tracing::info!(
         target: "klavium",
-        "хоткеи: исправление={}, подсказка={}, голос={}, выход={}",
+        "хоткеи: исправление={}, отмена={}, выделенное={}, подсказка={}, голос={}, выход={}",
         config.hotkeys.correction_apply,
+        config.hotkeys.correction_undo,
+        config.hotkeys.correction_selection,
         config.hotkeys.card_hide,
         config.hotkeys.voice_toggle,
         config.hotkeys.quit

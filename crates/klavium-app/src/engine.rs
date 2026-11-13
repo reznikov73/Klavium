@@ -1028,7 +1028,11 @@ impl CorrectionEngine {
         );
     }
 
-    /// Забыть последнее исправление (после пакетной правки отмена не имеет смысла).
+    /// Забыть последнее исправление.
+    ///
+    /// Сейчас не вызывается: отмена поддерживается и для пакетной правки.
+    /// Оставлено для сценариев, где отменять нельзя (например, сброс очереди).
+    #[allow(dead_code)]
     fn clear_last_correction(&self) {
         if let Ok(mut slot) = self.last_correction.lock() {
             *slot = None;
@@ -1086,9 +1090,6 @@ impl CorrectionEngine {
             }
             return false;
         }
-        // После пакетной правки отмена одного слова не имеет смысла.
-        self.clear_last_correction();
-
         let first_target = errors[0].input_target;
         if errors.iter().any(|e| e.input_target != first_target) {
             return false; // ошибки из разных полей — не трогаем
@@ -1129,6 +1130,22 @@ impl CorrectionEngine {
             }
         }
         self.io.send_text(&final_text);
+
+        // После пакетной правки отмена возвращает весь исправленный фрагмент —
+        // стираем вставленное и возвращаем исходный span в исходной раскладке.
+        let restore = target_layout.map_or_else(
+            || original_span.clone(),
+            |target| {
+                convert::convert_punct(&original_span, target.as_str(), target.opposite().as_str())
+            },
+        );
+        self.store_last_correction(LastCorrection {
+            inserted: final_text.clone(),
+            restore,
+            source_layout: original_layout,
+            target: first_target,
+            at: Instant::now(),
+        });
 
         {
             let mut state = self.lock_state();
@@ -1407,6 +1424,7 @@ mod tests {
             't' => (0x54, 0x14),
             'n' => (0x4E, 0x31),
             'c' => (0x43, 0x2E),
+            'v' => (0x56, 0x2F),
             ' ' => (0x20, 0x39),
             other => panic!("нет маппинга в тесте для {other:?}"),
         };
@@ -1543,6 +1561,26 @@ mod tests {
         let before = io.ops().len();
         engine.request_fix_selection();
         assert_eq!(io.ops().len(), before, "без выделения ничего не вводим");
+    }
+
+    #[test]
+    fn test_batch_undo_restores_span() {
+        let (engine, io, _events) = make_engine();
+        press_str(&engine, "ghbdtn dctv ");
+        assert_eq!(engine.pending_errors_count(), 2);
+
+        engine.request_apply();
+        assert!(engine.can_undo(), "после пакетной правки отмена работает");
+        let applied = io.ops().len();
+
+        engine.request_undo();
+        let ops = io.ops();
+        let undo = &ops[applied..];
+        assert!(
+            undo.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "ghbdtn dctv ")),
+            "ops: {undo:?}"
+        );
     }
 
     #[test]
