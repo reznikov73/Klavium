@@ -581,6 +581,12 @@ impl CorrectionEngine {
         }
 
         let modifiers = self.io.modifiers();
+        // Ctrl/Alt — это команды (копирование, вставка, свои хоткеи), а не текст:
+        // иначе «a» из Ctrl+A и «c» из Ctrl+C попадают в буфер слова
+        // и дописываются в документ при исправлении.
+        if modifiers.ctrl || modifiers.alt {
+            return;
+        }
         let layout = self.io.current_layout();
         let Some(ch) = keys::resolve_char(key.vk_code, key.scan_code, layout, modifiers.shift)
         else {
@@ -1003,6 +1009,7 @@ impl CorrectionEngine {
             let source = target.opposite();
             if let Some(text) = &terminator {
                 let converted = convert::convert_punct(text, source.as_str(), target.as_str());
+                let converted = convert::convert_single_letters(&converted, source, target);
                 if converted != *text {
                     terminator = Some(converted);
                 }
@@ -1010,6 +1017,7 @@ impl CorrectionEngine {
             if !text_after.is_empty() {
                 let converted =
                     convert::convert_punct(&text_after, source.as_str(), target.as_str());
+                let converted = convert::convert_single_letters(&converted, source, target);
                 if converted != text_after {
                     text_after = converted;
                 }
@@ -1042,16 +1050,24 @@ impl CorrectionEngine {
         }
 
         // Запомнить для отмены: стираем ровно то, что вставили, и возвращаем
-        // исходное слово с хвостом в исходной раскладке.
-        self.remember_for_undo(
-            &error.original,
-            &error.corrected,
-            terminator.as_deref(),
-            &text_after,
-            target_layout,
-            original_layout,
-            error.input_target,
-        );
+        // исходное слово с хвостом — ровно так, как оно было набрано.
+        let mut inserted = error.corrected.clone();
+        if let Some(text) = &terminator {
+            inserted.push_str(text);
+        }
+        inserted.push_str(&text_after);
+        let mut restore = error.original.clone();
+        if let Some(text) = &error.terminator {
+            restore.push_str(text);
+        }
+        restore.push_str(&error.text_after);
+        self.store_last_correction(LastCorrection {
+            inserted,
+            restore,
+            source_layout: original_layout,
+            target: error.input_target,
+            at: Instant::now(),
+        });
 
         {
             let term = terminator.unwrap_or_default();
@@ -1076,51 +1092,6 @@ impl CorrectionEngine {
             batch: false,
         });
         true
-    }
-
-    /// Запомнить последнее исправление и разрешить отмену.
-    #[allow(clippy::too_many_arguments)] // все параметры — из одного места вызова
-    fn remember_for_undo(
-        &self,
-        original: &str,
-        corrected: &str,
-        terminator: Option<&str>,
-        text_after: &str,
-        target_layout: Option<Layout>,
-        source_layout: Option<Layout>,
-        target: StoredTarget,
-    ) {
-        let mut inserted = corrected.to_string();
-        let mut restore = original.to_string();
-        let mut term_source = terminator.map(str::to_string);
-        let mut after_source = Some(text_after.to_string()).filter(|text| !text.is_empty());
-        if let (Some(target_layout), Some(source_layout)) = (target_layout, source_layout) {
-            let source = source_layout.as_str();
-            let target = target_layout.as_str();
-            if let Some(text) = &term_source {
-                term_source = Some(convert::convert_punct(text, target, source));
-            }
-            if let Some(text) = &after_source {
-                after_source = Some(convert::convert_punct(text, target, source));
-            }
-        }
-        if let Some(text) = terminator {
-            inserted.push_str(text);
-        }
-        inserted.push_str(text_after);
-        if let Some(text) = &term_source {
-            restore.push_str(text);
-        }
-        if let Some(text) = &after_source {
-            restore.push_str(text);
-        }
-        self.store_last_correction(LastCorrection {
-            inserted,
-            restore,
-            source_layout,
-            target,
-            at: Instant::now(),
-        });
     }
 
     /// Запомнить последнее исправление и разрешить отмену.
@@ -1347,6 +1318,9 @@ impl CorrectionEngine {
             if converted != final_text {
                 final_text = converted;
             }
+            // Одиночные буквы («z» → «я») в очередь ошибок не попадают:
+            // дотягиваем их здесь, раз раскладка фразы уже признана неверной.
+            final_text = convert::convert_single_letters(&final_text, source, target);
         }
 
         let _guard = SuppressGuard::new(&self.suppress);
@@ -1363,12 +1337,10 @@ impl CorrectionEngine {
 
         // После пакетной правки отмена возвращает весь исправленный фрагмент —
         // стираем вставленное и возвращаем исходный span в исходной раскладке.
-        let restore = target_layout.map_or_else(
-            || original_span.clone(),
-            |target| {
-                convert::convert_punct(&original_span, target.as_str(), target.opposite().as_str())
-            },
-        );
+        // Отмена возвращает ровно тот текст, который был набран до правки:
+        // original_span — снимок «как было», перекодировать его не нужно
+        // (иначе запятая вернётся как вопросительный знак).
+        let restore = original_span.clone();
         self.store_last_correction(LastCorrection {
             inserted: final_text.clone(),
             restore,
@@ -1598,6 +1570,10 @@ mod tests {
         fn set_exe(&self, exe: Option<&str>) {
             self.0.lock().unwrap().exe = exe.map(str::to_string);
         }
+
+        fn set_modifiers(&self, modifiers: Modifiers) {
+            self.0.lock().unwrap().modifiers = modifiers;
+        }
     }
 
     impl EngineIo for MockIo {
@@ -1671,6 +1647,14 @@ mod tests {
             'n' => (0x4E, 0x31),
             'c' => (0x43, 0x2E),
             'v' => (0x56, 0x2F),
+            'z' => (0x5A, 0x2C),
+            'i' => (0x49, 0x17),
+            'k' => (0x4B, 0x25),
+            'a' => (0x41, 0x1E),
+            'e' => (0x45, 0x12),
+            'f' => (0x46, 0x21),
+            'r' => (0x52, 0x13),
+            ',' => (0xBC, 0x33),
             ' ' => (0x20, 0x39),
             other => panic!("нет маппинга в тесте для {other:?}"),
         };
@@ -1898,6 +1882,89 @@ mod tests {
             EngineEvent::TranslitSkipped { reason } => assert_ne!(reason, ""),
             other => panic!("ожидали пропуск: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_batch_converts_single_letter_words() {
+        let (engine, io, _events) = make_engine();
+        // «привет я пришел» набрано в английской раскладке: ghbdtn z ghbitk
+        press_str(&engine, "ghbdtn z ghbitk ");
+        assert_eq!(engine.pending_errors_count(), 2);
+
+        engine.request_apply();
+        let ops = io.ops();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "привет я пришел ")),
+            "одиночная «z» должна стать «я»: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn test_batch_undo_keeps_single_letter() {
+        let (engine, io, _events) = make_engine();
+        press_str(&engine, "ghbdtn z ghbitk ");
+        engine.request_apply();
+        let applied = io.ops().len();
+
+        engine.request_undo();
+        let ops = io.ops();
+        let undo = &ops[applied..];
+        assert!(
+            undo.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "ghbdtn z ghbitk ")),
+            "отмена возвращает исходный текст: {undo:?}"
+        );
+    }
+
+    #[test]
+    fn test_correction_converts_single_letter_in_tail() {
+        let (engine, io, _events) = make_engine();
+        press_str(&engine, "ghbdtn z ");
+        assert_eq!(engine.pending_errors_count(), 1);
+
+        engine.request_apply();
+        let ops = io.ops();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "я ")),
+            "хвост «z» тоже перекодируется: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn test_ctrl_shortcuts_do_not_enter_word_buffer() {
+        let (engine, io, _events) = make_engine();
+        press_str(&engine, "ghbdtn");
+        // Пользователь копирует слово: Ctrl+A, Ctrl+C — команды, не текст.
+        io.set_modifiers(Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        });
+        press(&engine, 'a');
+        press(&engine, 'c');
+        io.set_modifiers(Modifiers::default());
+        assert_eq!(engine.lock_state().current_word, "ghbdtn");
+    }
+
+    #[test]
+    fn test_batch_undo_restores_phrase_with_commas() {
+        let (engine, io, _events) = make_engine();
+        // Фраза пользователя: «бабушка я пришел», набранная в английской раскладке.
+        press_str(&engine, ",f,eirf z ghbitk ");
+        assert_eq!(engine.pending_errors_count(), 2);
+
+        engine.request_apply();
+        let applied = io.ops().len();
+
+        engine.request_undo();
+        let ops = io.ops();
+        let undo = &ops[applied..];
+        assert!(
+            undo.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == ",f,eirf z ghbitk ")),
+            "отмена возвращает запятую и букву «z» как были: {undo:?}"
+        );
     }
 
     #[test]

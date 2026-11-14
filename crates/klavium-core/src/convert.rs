@@ -386,6 +386,63 @@ pub fn convert_punct(text: &str, from_layout: &str, to_layout: &str) -> String {
     }
 }
 
+/// Перекодировать в другую раскладку одиночные буквы-слова.
+///
+/// Слова из двух и более букв движок исправляет поштучно, а одиночная
+/// буква в очередь не попадает: «z» — это и слово «я», и переменная
+/// в формуле. Когда раскладка фразы уже признана неверной (пакетная
+/// правка, исправление слова с хвостом), такие буквы нужно дотянуть —
+/// этот проход трогает только односимвольные буквенные токены и ничего
+/// больше.
+///
+/// # Примеры
+///
+/// ```
+/// use klavium_core::convert::convert_single_letters;
+/// use klavium_core::Layout;
+///
+/// assert_eq!(
+///     convert_single_letters("ghbdtn z ghbitk", Layout::En, Layout::Ru),
+///     "ghbdtn я ghbitk"
+/// );
+/// ```
+#[must_use]
+pub fn convert_single_letters(text: &str, from: Layout, to: Layout) -> String {
+    let mapper: fn(char) -> Option<char> = match (from, to) {
+        (Layout::Ru, Layout::En) => maps::ru_to_en,
+        (Layout::En, Layout::Ru) => maps::en_to_ru,
+        _ => return text.to_string(),
+    };
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut index = 0;
+    while index < chars.len() {
+        if !chars[index].is_alphabetic() {
+            out.push(chars[index]);
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < chars.len() && chars[index].is_alphabetic() {
+            index += 1;
+        }
+        // Слово из двух и более букв не трогаем — его судьбу решает движок.
+        if index - start != 1 {
+            out.extend(&chars[start..index]);
+            continue;
+        }
+        let ch = chars[start];
+        let converted = mapper(ch).unwrap_or(ch);
+        if ch.is_uppercase() && converted.is_alphabetic() {
+            out.extend(converted.to_uppercase());
+        } else {
+            out.push(converted);
+        }
+    }
+    out
+}
+
 /// Общий посимвольный проход с сохранением регистра.
 ///
 /// Семантика:
@@ -673,6 +730,30 @@ mod tests {
             let back = translit(&latin, TranslitDirection::LatToRu);
             assert_eq!(back, word, "{word} → {latin} → {back}");
         }
+    }
+
+    #[test]
+    fn test_convert_single_letters() {
+        // Перекодируются только односимвольные буквенные токены
+        assert_eq!(
+            convert_single_letters("ghbdtn z ghbitk", Layout::En, Layout::Ru),
+            "ghbdtn я ghbitk"
+        );
+        assert_eq!(
+            convert_single_letters("привет я пришел", Layout::Ru, Layout::En),
+            "привет z пришел"
+        );
+        assert_eq!(convert_single_letters("Z", Layout::En, Layout::Ru), "Я");
+        // Цифры, знаки и пробелы не трогаются, регистр сохраняется
+        assert_eq!(
+            convert_single_letters("1 + v = 5", Layout::En, Layout::Ru),
+            "1 + м = 5"
+        );
+        assert_eq!(
+            convert_single_letters("ab z", Layout::En, Layout::Ru),
+            "ab я"
+        );
+        assert_eq!(convert_single_letters("", Layout::En, Layout::Ru), "");
     }
 
     #[test]
