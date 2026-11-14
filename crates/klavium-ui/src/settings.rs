@@ -274,6 +274,8 @@ struct SettingsApp {
     app_capture_at: Option<Instant>,
     /// Состояние паузы коррекции для диагностики (`None` — работает).
     pause_state: Box<dyn Fn() -> Option<String> + 'static>,
+    /// Окно справки открыто (F1 или кнопка в боковом меню).
+    help_open: bool,
 }
 
 impl SettingsApp {
@@ -325,6 +327,7 @@ impl SettingsApp {
             new_app_rule: String::new(),
             app_capture_at: None,
             pause_state: context.pause_state,
+            help_open: std::env::var("KLAVIUM_APP_HELP").is_ok(),
         }
     }
 
@@ -372,6 +375,7 @@ impl SettingsApp {
         self.draw_sidebar(ctx);
         self.draw_bottom_bar(ctx);
         self.draw_content(ctx);
+        crate::help::draw(ctx, &mut self.help_open);
     }
 
     /// Боковое меню: шапка с иконкой и версией, разделы, ссылка на папку данных.
@@ -434,6 +438,18 @@ impl SettingsApp {
                         let _ = std::process::Command::new("explorer")
                             .arg(&self.data_dir)
                             .spawn();
+                    }
+                    ui.add_space(theme::SPACE_2);
+                    let help = egui::Button::new(
+                        RichText::new("Справка (F1)")
+                            .size(theme::TEXT_BODY)
+                            .color(theme::ACCENT),
+                    )
+                    .fill(Color32::TRANSPARENT)
+                    .stroke(Stroke::NONE);
+                    if ui.add(help).clicked() {
+                        self.help_open = true;
+                        tracing::info!(target: "klavium", "справка: открыта (кнопка)");
                     }
                 });
             });
@@ -1946,6 +1962,16 @@ fn show_window(ctx: &egui::Context) {
 
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // F1 — справка. Во время захвата сочетания клавишу не отбираем:
+        // пользователь может как раз назначать F1 на действие.
+        if self.capture.is_none() && ctx.input(|input| input.key_pressed(egui::Key::F1)) {
+            self.help_open = !self.help_open;
+            tracing::info!(
+                target: "klavium",
+                "справка: {} (F1)",
+                if self.help_open { "открыта" } else { "закрыта" }
+            );
+        }
         // Статус в нижней панели живёт 4 секунды.
         if self
             .status_at
