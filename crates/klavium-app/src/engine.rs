@@ -29,12 +29,16 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use klavium_core::apprules::{self, AppRule, AppRuleMode};
+use klavium_core::config::Snippet;
 use klavium_core::detect::{detect_language, smart_correction, AMBIGUOUS_EN_CHARS};
 use klavium_core::{convert, keys, Layout};
 use klavium_platform::hook::INJECT_EXTRA_INFO;
 
 /// Максимальная длина `text_after` у ожидающей ошибки (символов).
 const MAX_TEXT_AFTER: usize = 500;
+
+/// Сколько последних набранных символов помним для сниппетов.
+const TYPED_TAIL_CHARS: usize = 64;
 /// Максимальный возраст ошибки в очереди.
 const MAX_ERROR_AGE: Duration = Duration::from_secs(60);
 /// Как часто сверяем фокус внутри окна при работе с очередью.
@@ -125,6 +129,8 @@ pub struct EngineConfig {
     pub word_timeout: Duration,
     /// Правила для отдельных приложений.
     pub app_rules: Vec<AppRule>,
+    /// Сниппеты: триггер → текст (уже проверенные).
+    pub snippets: Vec<Snippet>,
     /// Запоминать слова, исправление которых отменили (стоп-лист).
     pub learn_on_undo: bool,
     /// Выполнять задания синхронно (используется тестами).
@@ -142,6 +148,7 @@ impl Default for EngineConfig {
             paste_long_text: true,
             word_timeout: Duration::from_secs(5),
             app_rules: Vec::new(),
+            snippets: Vec::new(),
             learn_on_undo: true,
             run_jobs_inline: false,
         }
@@ -262,6 +269,8 @@ struct PendingError {
 #[derive(Default)]
 struct InnerState {
     current_word: String,
+    /// Хвост последних набранных символов (включая знаки) — для сниппетов.
+    typed_tail: String,
     word_start_layout: Option<Layout>,
     input_context: VecDeque<String>,
     pending_tail: String,
@@ -284,6 +293,13 @@ enum Job {
     FixSelection,
     Translit,
     VoiceInsert {
+        text: String,
+    },
+    /// Вставка сниппета: стереть `erase` символов и напечатать текст.
+    InsertSnippet {
+        erase: u32,
+        /// Что было в документе (для хвоста ожидающих ошибок).
+        old: String,
         text: String,
     },
     /// Событие клавиши для детекции (обрабатывается воркером).
@@ -636,6 +652,9 @@ impl CorrectionEngine {
             Job::FixSelection => self.perform_fix_selection(),
             Job::Translit => self.perform_translit(),
             Job::VoiceInsert { text } => self.perform_voice_insert(&text),
+            Job::InsertSnippet { erase, old, text } => {
+                self.perform_snippet(erase, &old, &text);
+            }
             Job::Key(key) => self.handle_key(&key),
         }
     }
@@ -768,6 +787,12 @@ impl CorrectionEngine {
         let mut starts_new_word = false;
         {
             let mut state = self.lock_state();
+            // Хвост набора нужен сниппетам: триггер может содержать знаки.
+            state.typed_tail.push(ch);
+            if state.typed_tail.chars().count() > TYPED_TAIL_CHARS {
+                let trimmed: String = state.typed_tail.chars().skip(16).collect();
+                state.typed_tail = trimmed;
+            }
             let since_last = state
                 .last_key_time
                 .map_or(Duration::MAX, |t| now.saturating_duration_since(t));
@@ -785,6 +810,12 @@ impl CorrectionEngine {
                 }
             }
         }
+
+        // Сниппет проверяем раньше коррекции: он имеет приоритет.
+        if !word_char && self.try_snippet(ch) {
+            return;
+        }
+
         if complete_needed {
             self.complete_word();
         }
@@ -803,6 +834,109 @@ impl CorrectionEngine {
         if word_char && starts_new_word {
             let _ = self.events.send(EngineEvent::WordStarted { layout });
         }
+    }
+
+    /// Проверить хвост набора на сниппет.
+    ///
+    /// `terminator` уже в документе: замена стирает триггер вместе с ним
+    /// и вставляет текст плюс тот же терминатор.
+    /// `true` — сниппет сработал, обычная обработка слова не нужна.
+    fn try_snippet(&self, terminator: char) -> bool {
+        let Some((erase, expansion, old)) = self.match_snippet(terminator) else {
+            return false;
+        };
+        {
+            let mut state = self.lock_state();
+            state.current_word.clear();
+            state.pending_tail.clear();
+            state.typed_tail.clear();
+        }
+        let mut text = expansion;
+        text.push(terminator);
+        let mut old_full = old;
+        old_full.push(terminator);
+        self.submit_job(Job::InsertSnippet {
+            erase,
+            old: old_full,
+            text,
+        });
+        true
+    }
+
+    /// Найти самый длинный триггер в конце набранного хвоста.
+    ///
+    /// Возвращает `(сколько стереть с терминатором, что вставить, что было)`.
+    fn match_snippet(&self, terminator: char) -> Option<(u32, String, String)> {
+        let snippets = self.config().snippets;
+        if snippets.is_empty() {
+            return None;
+        }
+        let tail = self.lock_state().typed_tail.clone();
+        let mut chars: Vec<char> = tail.chars().collect();
+        if chars.last() == Some(&terminator) {
+            chars.pop();
+        }
+        let prefix: String = chars.iter().collect();
+        if prefix.is_empty() {
+            return None;
+        }
+        let lowered = prefix.to_lowercase();
+
+        let mut best: Option<&Snippet> = None;
+        for snippet in &snippets {
+            // Защита от невалидных записей: движок не полагается на то,
+            // что конфиг уже отфильтрован.
+            if snippet.trigger.chars().count() < 2 || snippet.expansion.is_empty() {
+                continue;
+            }
+            let trigger = snippet.trigger.to_lowercase();
+            if !lowered.ends_with(&trigger) {
+                continue;
+            }
+            let longer = best
+                .is_none_or(|current| trigger.chars().count() > current.trigger.chars().count());
+            if longer {
+                best = Some(snippet);
+            }
+        }
+        let snippet = best?;
+        let trigger_len = snippet.trigger.chars().count();
+        let old: String = prefix
+            .chars()
+            .skip(prefix.chars().count() - trigger_len)
+            .collect();
+        let erase = u32::try_from(trigger_len + 1).unwrap_or(u32::MAX);
+        Some((erase, snippet.expansion.clone(), old))
+    }
+
+    /// Вставить сниппет: стереть триггер с терминатором и напечатать текст.
+    fn perform_snippet(&self, erase: u32, old: &str, text: &str) {
+        let target = self.io.capture_target();
+        let _guard = SuppressGuard::new(&self.suppress);
+        let _ = self.io.restore_target(&target);
+        self.io.send_backspaces(erase);
+        let config = self.config();
+        let pasted = config.paste_long_text
+            && text.chars().count() > config.paste_threshold
+            && self.io.paste_text(text);
+        if !pasted {
+            self.io.send_text(text);
+        }
+        {
+            let mut state = self.lock_state();
+            for error in &mut state.pending_errors {
+                if error.text_after.ends_with(old) {
+                    let cut = error.text_after.len() - old.len();
+                    error.text_after.truncate(cut);
+                    error.text_after.push_str(text);
+                }
+            }
+        }
+        tracing::info!(
+            target: "klavium",
+            "сниппет: «{old}» → {} символов",
+            text.chars().count()
+        );
     }
 
     /// Завершить текущее слово: анализ, постановка ошибки в очередь.
@@ -1691,6 +1825,8 @@ mod tests {
             'f' => (0x46, 0x21),
             'r' => (0x52, 0x13),
             ',' => (0xBC, 0x33),
+            ';' => (0xBA, 0x27),
+            'x' => (0x58, 0x2D),
             ' ' => (0x20, 0x39),
             other => panic!("нет маппинга в тесте для {other:?}"),
         };
@@ -1931,6 +2067,68 @@ mod tests {
             EngineEvent::TranslitSkipped { reason } => assert_ne!(reason, ""),
             other => panic!("ожидали пропуск: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_snippet_replaces_trigger() {
+        let config = EngineConfig {
+            snippets: vec![Snippet::new(";adr", "адрес")],
+            ..EngineConfig::default()
+        };
+        let (engine, io, _events) = make_engine_with(config);
+
+        press_str(&engine, ";adr ");
+
+        let ops = io.ops();
+        // Стираем триггер (4) и пробел (1), вставляем адрес и пробел.
+        assert!(ops.contains(&Op::Backspaces(5)), "ops: {ops:?}");
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "адрес ")),
+            "ops: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn test_snippet_wins_over_correction() {
+        // Триггер совпадает с «ошибкой раскладки» — побеждает сниппет.
+        let config = EngineConfig {
+            snippets: vec![Snippet::new("ghbdtn", "привет от сниппета")],
+            ..EngineConfig::default()
+        };
+        let (engine, io, _events) = make_engine_with(config);
+
+        press_str(&engine, "ghbdtn ");
+
+        let ops = io.ops();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "привет от сниппета ")),
+            "ops: {ops:?}"
+        );
+        assert_eq!(
+            engine.pending_errors_count(),
+            0,
+            "в очередь слово не попало"
+        );
+    }
+
+    #[test]
+    fn test_snippet_invalid_is_ignored() {
+        let config = EngineConfig {
+            // Триггер в один символ не годится.
+            snippets: vec![Snippet::new("x", "икс")],
+            ..EngineConfig::default()
+        };
+        let (engine, io, _events) = make_engine_with(config);
+
+        press_str(&engine, "x ");
+        let ops = io.ops();
+        assert!(
+            !ops.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "икс ")),
+            "ops: {ops:?}"
+        );
     }
 
     #[test]

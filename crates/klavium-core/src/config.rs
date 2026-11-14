@@ -375,6 +375,59 @@ pub struct AppConfig {
     pub typing: TypingConfig,
     /// Логирование.
     pub logging: LoggingConfig,
+    /// Сниппеты: триггер → текст.
+    pub snippets: Vec<Snippet>,
+}
+
+/// Сниппет: короткий триггер заменяется готовым текстом.
+///
+/// Срабатывает по завершении слова: набрали `;адр` и пробел — программа
+/// стирает триггер и вставляет текст. Триггер — от двух символов, без пробелов.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Snippet {
+    /// Что набирает пользователь.
+    pub trigger: String,
+    /// Что вставляется вместо триггера.
+    pub expansion: String,
+}
+
+impl Snippet {
+    /// Создать сниппет (значения не проверяются — см. [`Self::is_valid`]).
+    #[must_use]
+    pub fn new(trigger: &str, expansion: &str) -> Self {
+        Self {
+            trigger: trigger.trim().to_string(),
+            expansion: expansion.to_string(),
+        }
+    }
+
+    /// Годится ли сниппет: триггер от двух символов, без пробелов и переводов.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        let trigger = self.trigger.trim();
+        trigger.chars().count() >= 2
+            && !trigger.chars().any(char::is_whitespace)
+            && !self.expansion.trim().is_empty()
+    }
+}
+
+/// Только пригодные сниппеты, без повторов триггера (первый побеждает).
+#[must_use]
+pub fn valid_snippets(snippets: &[Snippet]) -> Vec<Snippet> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut result = Vec::new();
+    for snippet in snippets {
+        if !snippet.is_valid() {
+            continue;
+        }
+        let key = snippet.trigger.to_lowercase();
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        result.push(snippet.clone());
+    }
+    result
 }
 
 /// Темп печати исправлений и голосовой вставки.
@@ -399,6 +452,27 @@ impl Default for TypingConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_snippet_validation_and_dedupe() {
+        let good = Snippet::new(";адр", "адрес");
+        assert!(good.is_valid());
+        assert!(!Snippet::new("x", "икс").is_valid(), "слишком короткий");
+        assert!(
+            !Snippet::new("два слова", "адрес").is_valid(),
+            "пробел в триггере"
+        );
+        assert!(!Snippet::new(";адр", "   ").is_valid(), "пустая замена");
+
+        let all = vec![
+            Snippet::new(";адр", "адрес"),
+            Snippet::new(";АДР", "второй"),
+            Snippet::new("x", "икс"),
+        ];
+        let valid = valid_snippets(&all);
+        assert_eq!(valid.len(), 1, "дубли и короткие триггеры отброшены");
+        assert_eq!(valid[0].expansion, "адрес", "первый побеждает");
+    }
 
     #[test]
     fn test_config_defaults() {

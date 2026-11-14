@@ -270,6 +270,9 @@ struct SettingsApp {
     reset_armed: Option<Instant>,
     /// Черновик имени процесса в карточке «Приложения».
     new_app_rule: String,
+    /// Новый сниппет: триггер и текст замены.
+    new_snippet_trigger: String,
+    new_snippet_expansion: String,
     /// Момент, когда ловим активное окно для правила (кнопка «Текущее окно»).
     app_capture_at: Option<Instant>,
     /// Состояние паузы коррекции для диагностики (`None` — работает).
@@ -325,6 +328,8 @@ impl SettingsApp {
             status_at: None,
             reset_armed: None,
             new_app_rule: String::new(),
+            new_snippet_trigger: String::new(),
+            new_snippet_expansion: String::new(),
             app_capture_at: None,
             pause_state: context.pause_state,
             help_open: std::env::var("KLAVIUM_APP_HELP").is_ok(),
@@ -645,6 +650,14 @@ impl SettingsApp {
         );
 
         ui.add_space(theme::SPACE_4);
+        self.draw_user_dict_card(ui);
+
+        ui.add_space(theme::SPACE_6);
+        self.draw_snippets(ui);
+    }
+
+    /// Карточка «Словарь пользователя»: файл со своими словами и стоп-листом.
+    fn draw_user_dict_card(&self, ui: &mut egui::Ui) {
         ui.label(
             RichText::new("Словарь пользователя")
                 .size(theme::TEXT_CARD_TITLE)
@@ -1443,6 +1456,117 @@ impl SettingsApp {
 
         ui.add_space(theme::SPACE_6);
         self.draw_app_rules(ui);
+    }
+
+    /// Карточка «Сниппеты»: триггер заменяется готовым текстом.
+    fn draw_snippets(&mut self, ui: &mut egui::Ui) {
+        ui.label(
+            RichText::new("Сниппеты")
+                .size(theme::TEXT_CARD_TITLE)
+                .strong()
+                .color(theme::TEXT_PRIMARY),
+        );
+        ui.add_space(theme::SPACE_1);
+        ui.label(
+            RichText::new(
+                "Короткий триггер заменяется готовым текстом по завершении слова: \
+                 набрали «;адр» и пробел — появился адрес. Триггер — от двух символов, без пробелов.",
+            )
+            .size(theme::TEXT_CAPTION)
+            .color(theme::TEXT_SECONDARY),
+        );
+        ui.add_space(theme::SPACE_2);
+
+        if self.config.snippets.is_empty() {
+            ui.label(
+                RichText::new("Сниппетов нет.")
+                    .size(theme::TEXT_CAPTION)
+                    .color(theme::TEXT_SECONDARY),
+            );
+        } else {
+            let mut remove: Option<usize> = None;
+            for (index, snippet) in self.config.snippets.iter().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(&snippet.trigger)
+                            .monospace()
+                            .size(theme::TEXT_MONO)
+                            .color(theme::TEXT_PRIMARY),
+                    );
+                    ui.label(
+                        RichText::new("→")
+                            .size(theme::TEXT_BODY)
+                            .color(theme::TEXT_SECONDARY),
+                    );
+                    let total = snippet.expansion.chars().count();
+                    let preview: String = snippet.expansion.chars().take(60).collect();
+                    let preview = if total > 60 {
+                        format!("{preview}…")
+                    } else {
+                        preview
+                    };
+                    ui.label(
+                        RichText::new(preview)
+                            .size(theme::TEXT_BODY)
+                            .color(theme::TEXT_PRIMARY),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if widgets::link_button(ui, "Удалить").clicked() {
+                            remove = Some(index);
+                        }
+                    });
+                });
+                ui.add_space(theme::SPACE_1);
+            }
+            if let Some(index) = remove {
+                self.config.snippets.remove(index);
+            }
+        }
+
+        ui.add_space(theme::SPACE_2);
+        ui.horizontal(|ui| {
+            let width = ((ui.available_width() - 260.0) / 2.0).max(100.0);
+            ui.add_sized(
+                [width, 26.0],
+                egui::TextEdit::singleline(&mut self.new_snippet_trigger)
+                    .hint_text("Триггер, например ;адр"),
+            );
+            ui.add_sized(
+                [width, 26.0],
+                egui::TextEdit::singleline(&mut self.new_snippet_expansion)
+                    .hint_text("Текст замены"),
+            );
+            if widgets::secondary_button(ui, "Добавить").clicked() {
+                self.add_snippet();
+            }
+        });
+    }
+
+    /// Добавить сниппет из полей ввода (с проверкой и без дублей).
+    fn add_snippet(&mut self) {
+        let snippet = klavium_core::config::Snippet::new(
+            &self.new_snippet_trigger,
+            &self.new_snippet_expansion,
+        );
+        if !snippet.is_valid() {
+            self.set_status(
+                "Триггер — от 2 символов, без пробелов; текст замены не пустой".to_string(),
+                true,
+            );
+            return;
+        }
+        let duplicate = self
+            .config
+            .snippets
+            .iter()
+            .any(|existing| existing.trigger.to_lowercase() == snippet.trigger.to_lowercase());
+        if duplicate {
+            self.set_status(format!("Сниппет «{}» уже есть", snippet.trigger), true);
+            return;
+        }
+        self.config.snippets.push(snippet);
+        self.new_snippet_trigger.clear();
+        self.new_snippet_expansion.clear();
     }
 
     /// Карточка «Приложения»: где коррекция выключена или работает только по хоткею.
