@@ -1,6 +1,6 @@
 # Klavium — передача работы другому агенту
 
-Состояние на **2026-11-14**: версия **0.2.10**, ветка `main`, коммит `2391ba2`,
+Состояние на **2026-11-14**: версия **0.2.11**, ветка `main`, коммит `c5a7cf0`,
 рабочая копия чистая, `origin/main` синхронизирован. Приложение собрано,
 установлено и запущено.
 
@@ -68,6 +68,7 @@ git add -A; git commit -m "…"; git push origin main
 | 0.2.8 | 7.4 Правила для приложений (`correction.app_rules`, `off`/`manual`, `window::foreground_process_name()` с кэшем по HWND, карточка «Приложения», «Текущее окно») + 7.5 Пауза коррекции из трея (30 мин / до перезапуска / снять; только в памяти; тултип «(пауза)»; тост) |
 | 0.2.9 | 7.6 Push-to-talk: `voice.mode = toggle | push`, автомат `voice::push::PushToTalk`, хук ловит key-up клавиши диктовки, `VoiceInbound::PushStart/PushStop`, бейдж «ГОВОРИТЕ» |
 | 0.2.10 | 7.7 Транслитерация `Ctrl+Alt+T`: `convert::translit` (ГОСТ 7.79 B с бытовыми заменами), `detect_translit_direction`, `Job::Translit` — выделение через буфер и текущее набираемое слово, переключение раскладки под итоговый текст, тосты «было → стало» и причины пропуска, скрипт `tools\check-translit.ps1` |
+| 0.2.11 | 7.10 Справка по `F1`: `docs/USER-GUIDE.md` вшивается через `include_str!`, окно `klavium-ui/src/help.rs` (заголовки, пункты, перенос строк), кнопка «Справка (F1)» в боковом меню, `KLAVIUM_APP_HELP=1` для дымового прогона, скриншот `docs/images/help.png` |
 
 ## 4. Что осталось — следующий шаг
 
@@ -127,6 +128,9 @@ Remove-Item Env:KLAVIUM_APP_SETTINGS_PAGE, Env:KLAVIUM_APP_SMOKE
   набрать `privet` → `Ctrl+Alt+T` → `привет`. На выделении: любой текст + `Ctrl+Alt+T`.
   В журнале — `транслит слова: «привет» → «privet»` или `транслит: «…» → «…»`,
   при пустом вводе — `транслит: пропуск — нет ни выделения, ни слова` и тост.
+- **Справка**: в окне настроек `F1` → окно «Справка — Klavium» с руководством;
+  повторное `F1` или крестик — закрыть; кнопка «Справка (F1)» в боковом меню.
+  В журнале — `справка: открыта (F1)`; дымовой прогон — `KLAVIUM_APP_HELP=1`.
 - **Словарь**: `data\user_dict.txt` — строка `привет` не исправляется, `!слово` запрещает.
 - **Правила приложений**: «Общие» → «Приложения» → «Текущее окно» (нажать и переключиться
   в Блокнот, через 3 с правило появится) → в Блокноте исправление не работает; режим
@@ -192,7 +196,7 @@ Remove-Item Env:KLAVIUM_APP_SETTINGS_PAGE, Env:KLAVIUM_APP_SMOKE
 | `crates/klavium-ui/src/` | `settings.rs` (все секции; `Section`, `HotkeyField`, `SettingsContext`), `theme.rs` (токены), `widgets.rs` (компоненты), `tray.rs` (иконка, меню, `PauseAccess`) |
 | `crates/klavium-app/src/` | `main.rs` (сборка приложения, хук, трей, окно), `engine.rs` (детекция/очередь/коррекция/отмена/пауза), `real_io.rs` (Win32-ввод, скорость), `runtime.rs` (`engine_config`, событийный цикл), `hotkeys.rs` (`CompiledHotkeys`), `voice/` (`mod.rs`, `worker.rs`, `push.rs`, `audio.rs`, `engines/`), `services.rs`, `stats.rs`, `sound.rs`, `models.rs`, `config_io.rs` |
 | `tools/` | `build_dist.ps1` (NSIS-установщик + portable zip), `gen_icons.py`, скрипты проверки (см. таблицу выше) |
-| `docs/` | `TZ-0.2.md` (ТЗ и статусы), `architecture.md`, `images/` (скриншоты для README) |
+| `docs/` | `TZ-0.2.md` (ТЗ и статусы), `architecture.md`, `USER-GUIDE.md` (руководство пользователя, вшивается в справку по F1), `images/` (скриншоты для README) |
 
 ## 8. Чек-лист перед коммитом
 
