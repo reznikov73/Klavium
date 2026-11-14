@@ -209,6 +209,18 @@ pub enum EngineEvent {
         /// Раскладка, под которой слово началось.
         layout: Option<Layout>,
     },
+    /// Транслитерация выполнена (журнал + тост).
+    TranslitApplied {
+        /// Что было преобразовано.
+        original: String,
+        /// Что вставили.
+        converted: String,
+    },
+    /// Транслитерировать нечего (тост с причиной).
+    TranslitSkipped {
+        /// Причина пропуска для пользователя.
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -262,6 +274,7 @@ enum Job {
     },
     Undo,
     FixSelection,
+    Translit,
     VoiceInsert {
         text: String,
     },
@@ -489,6 +502,11 @@ impl CorrectionEngine {
         self.submit_job(Job::FixSelection);
     }
 
+    /// Транслитерировать выделенное или последнее слово. Неблокирующе.
+    pub fn request_translit(&self) {
+        self.submit_job(Job::Translit);
+    }
+
     /// Вставить продиктованный текст (голосовая вставка). Неблокирующе.
     ///
     /// Выполняется в воркере под тем же подавлением физического ввода, что и
@@ -599,6 +617,7 @@ impl CorrectionEngine {
             }
             Job::Undo => self.undo_last(),
             Job::FixSelection => self.perform_fix_selection(),
+            Job::Translit => self.perform_translit(),
             Job::VoiceInsert { text } => self.perform_voice_insert(&text),
             Job::Key(key) => self.handle_key(&key),
         }
@@ -1134,6 +1153,109 @@ impl CorrectionEngine {
             target: "klavium",
             "выделенное исправлено: «{selected}» → «{converted}»"
         );
+    }
+
+    /// Транслитерация по хоткею (7.7): выделение или текущее слово.
+    ///
+    /// Выделение — приоритетный путь (как в 7.2): копируем, преобразуем,
+    /// вставляем поверх. Без выделения — слово, которое набирают прямо
+    /// сейчас (после терминатора буфер движка уже пуст).
+    fn perform_translit(&self) {
+        let selection = self
+            .io
+            .copy_selection()
+            .filter(|text| !text.trim().is_empty());
+        if let Some(selected) = selection {
+            self.translit_replacement(&selected);
+            return;
+        }
+        let word = self.lock_state().current_word.clone();
+        if word.trim().is_empty() {
+            self.translit_skipped("нет ни выделения, ни слова");
+        } else {
+            self.translit_word(&word);
+        }
+    }
+
+    /// Транслитерировать текст вместо выделения (путь 7.2).
+    fn translit_replacement(&self, selected: &str) {
+        let Some(direction) = convert::detect_translit_direction(selected) else {
+            self.translit_skipped("в тексте нет букв для транслитерации");
+            return;
+        };
+        let converted = convert::translit(selected, direction);
+        if converted == selected {
+            self.translit_skipped("текст не изменился");
+            return;
+        }
+        let target = self.io.capture_target();
+        let _guard = SuppressGuard::new(&self.suppress);
+        let _ = self.io.restore_target(&target);
+        let pasted = self.io.paste_text(&converted);
+        if !pasted {
+            self.io.send_text(&converted);
+        }
+        tracing::info!(target: "klavium", "транслит: «{selected}» → «{converted}»");
+        let _ = self.events.send(EngineEvent::TranslitApplied {
+            original: selected.to_string(),
+            converted,
+        });
+    }
+
+    /// Транслитерировать слово, которое набирают прямо сейчас.
+    fn translit_word(&self, word: &str) {
+        let Some(direction) = convert::detect_translit_direction(word) else {
+            self.translit_skipped("в слове нет букв для транслитерации");
+            return;
+        };
+        let converted = convert::translit(word, direction);
+        if converted == word {
+            self.translit_skipped("слово не изменилось");
+            return;
+        }
+        let target = self.io.capture_target();
+        let _guard = SuppressGuard::new(&self.suppress);
+        let _ = self.io.restore_target(&target);
+        self.switch_translit_layout(direction);
+        self.io
+            .send_backspaces(u32::try_from(word.chars().count()).unwrap_or(u32::MAX));
+        self.io.send_text(&converted);
+        {
+            let mut state = self.lock_state();
+            state.current_word.clone_from(&converted);
+            // Хвост ожидающих ошибок содержал это слово — заменяем на новое.
+            for error in &mut state.pending_errors {
+                if error.text_after.ends_with(word) {
+                    let cut = error.text_after.len() - word.len();
+                    error.text_after.truncate(cut);
+                    error.text_after.push_str(&converted);
+                }
+            }
+        }
+        tracing::info!(target: "klavium", "транслит слова: «{word}» → «{converted}»");
+        let _ = self.events.send(EngineEvent::TranslitApplied {
+            original: word.to_string(),
+            converted,
+        });
+    }
+
+    /// Переключить раскладку под итоговый текст: дальше удобнее печатать в нём.
+    fn switch_translit_layout(&self, direction: convert::TranslitDirection) {
+        let target = match direction {
+            convert::TranslitDirection::RuToLat => Layout::En,
+            convert::TranslitDirection::LatToRu => Layout::Ru,
+        };
+        if self.io.current_layout() != Some(target) {
+            let _ = self.io.switch_layout(target);
+        }
+    }
+
+    /// Сообщить, что транслитерировать нечего (тост).
+    fn translit_skipped(&self, reason: &str) {
+        tracing::info!(target: "klavium", "транслит: пропуск — {reason}");
+        let _ = self.events.send(EngineEvent::TranslitSkipped {
+            reason: reason.to_string(),
+        });
     }
 
     /// Забыть последнее исправление.
@@ -1685,6 +1807,97 @@ mod tests {
         let before = io.ops().len();
         engine.request_fix_selection();
         assert_eq!(io.ops().len(), before, "без выделения ничего не вводим");
+    }
+
+    #[test]
+    fn test_translit_selection_ru_to_lat() {
+        let (engine, io, events) = make_engine();
+        io.set_selection(Some("привет"));
+        engine.request_translit();
+        let ops = io.ops();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "privet")),
+            "ops: {ops:?}"
+        );
+        // Раскладка уже английская — переключать нечего.
+        assert!(!ops.iter().any(|op| matches!(op, Op::Switch(_))));
+        assert!(matches!(
+            recv_meaningful(&events),
+            EngineEvent::TranslitApplied { .. }
+        ));
+    }
+
+    #[test]
+    fn test_translit_selection_lat_to_ru() {
+        let (engine, io, _events) = make_engine();
+        io.set_layout(Layout::En);
+        io.set_selection(Some("privet"));
+        engine.request_translit();
+        let ops = io.ops();
+        // Выделение — не набираемое слово: раскладку не трогаем (как в 7.2).
+        assert!(!ops.iter().any(|op| matches!(op, Op::Switch(_))));
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "привет")),
+            "ops: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn test_translit_selection_without_letters_is_skipped() {
+        let (engine, io, events) = make_engine();
+        io.set_selection(Some("123 !?"));
+        let before = io.ops().len();
+        engine.request_translit();
+        assert_eq!(io.ops().len(), before, "нечего преобразовывать — не вводим");
+        assert!(matches!(
+            recv_meaningful(&events),
+            EngineEvent::TranslitSkipped { .. }
+        ));
+    }
+
+    #[test]
+    fn test_translit_selection_mixed_evenly_is_skipped() {
+        let (engine, io, events) = make_engine();
+        io.set_selection(Some("ghbdtn привет"));
+        engine.request_translit();
+        assert!(io.ops().is_empty(), "смесь поровну не трогаем");
+        assert!(matches!(
+            recv_meaningful(&events),
+            EngineEvent::TranslitSkipped { .. }
+        ));
+    }
+
+    #[test]
+    fn test_translit_current_word_ru_to_lat() {
+        let (engine, io, _events) = make_engine();
+        // В русской раскладке физические клавиши «ghbdtn» дают «привет».
+        io.set_layout(Layout::Ru);
+        press_str(&engine, "ghbdtn");
+        engine.request_translit();
+        let ops = io.ops();
+        assert!(ops.contains(&Op::Backspaces(6)), "ops: {ops:?}");
+        assert!(ops.contains(&Op::Switch(Layout::En)), "ops: {ops:?}");
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "privet")),
+            "ops: {ops:?}"
+        );
+        assert_eq!(engine.lock_state().current_word, "privet");
+    }
+
+    #[test]
+    fn test_translit_without_selection_and_word_notices() {
+        let (engine, io, events) = make_engine();
+        io.set_selection(None);
+        let before = io.ops().len();
+        engine.request_translit();
+        assert_eq!(io.ops().len(), before, "ничего не вводим");
+        match recv_meaningful(&events) {
+            EngineEvent::TranslitSkipped { reason } => assert_ne!(reason, ""),
+            other => panic!("ожидали пропуск: {other:?}"),
+        }
     }
 
     #[test]

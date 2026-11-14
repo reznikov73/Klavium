@@ -17,6 +17,8 @@ pub struct CompiledHotkeys {
     pub correction_undo: Option<Hotkey>,
     /// Исправить выделенный текст.
     pub correction_selection: Option<Hotkey>,
+    /// Транслитерировать выделенное или последнее слово.
+    pub translit: Option<Hotkey>,
     /// Скрыть карточку «было → станет».
     pub card_hide: Option<Hotkey>,
     /// Включить/выключить голосовой ввод.
@@ -40,6 +42,7 @@ impl CompiledHotkeys {
             correction_apply: parse_spec(&config.hotkeys.correction_apply),
             correction_undo: parse_spec(&config.hotkeys.correction_undo),
             correction_selection: parse_spec(&config.hotkeys.correction_selection),
+            translit: parse_spec(&config.hotkeys.translit),
             card_hide: parse_spec(&config.hotkeys.card_hide),
             voice_toggle: parse_spec(&config.hotkeys.voice_toggle),
             quit: parse_spec(&config.hotkeys.quit),
@@ -72,6 +75,16 @@ mod tests {
         assert!(esc.matches(0x1B, 0x01, Mods::none()));
         let f9 = compiled.voice_toggle.expect("F9");
         assert!(f9.matches(0x78, 0x43, Mods::none()));
+        let translit = compiled.translit.expect("Ctrl+Alt+T");
+        assert!(translit.matches(
+            0x54,
+            0x14,
+            Mods {
+                ctrl: true,
+                alt: true,
+                ..Mods::none()
+            }
+        ));
         let quit = compiled.quit.expect("Ctrl+Shift+Q");
         assert!(quit.matches(
             0x51,

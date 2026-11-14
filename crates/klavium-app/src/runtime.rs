@@ -142,5 +142,16 @@ pub fn handle_event(event: EngineEvent, overlay: &OverlayHandle, services: &Serv
             tracing::debug!(target: "klavium", "очередь очищена: {reason}");
             overlay.hide();
         }
+        EngineEvent::TranslitApplied {
+            original,
+            converted,
+        } => {
+            println!("[klavium] транслит: «{original}» → «{converted}»");
+            overlay.show_toast(&format!("{original} → {converted}"), (22, 163, 74));
+        }
+        EngineEvent::TranslitSkipped { reason } => {
+            println!("[klavium] транслит: {reason}");
+            overlay.show_toast(&format!("Транслит: {reason}"), (37, 99, 235));
+        }
     }
 }

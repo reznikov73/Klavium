@@ -53,10 +53,11 @@ fn log_startup(paths: &config_io::DataPaths) {
 fn log_hotkeys(config: &AppConfig) {
     tracing::info!(
         target: "klavium",
-        "хоткеи: исправление={}, отмена={}, выделенное={}, подсказка={}, голос={}, выход={}",
+        "хоткеи: исправление={}, отмена={}, выделенное={}, транслит={}, подсказка={}, голос={}, выход={}",
         config.hotkeys.correction_apply,
         config.hotkeys.correction_undo,
         config.hotkeys.correction_selection,
+        config.hotkeys.translit,
         config.hotkeys.card_hide,
         config.hotkeys.voice_toggle,
         config.hotkeys.quit
@@ -596,7 +597,8 @@ fn handle_push_key(
     true
 }
 
-/// Хоткеи исправления: применить, отменить, исправить выделенное.
+/// Хоткеи исправления: применить, отменить, исправить выделенное,
+/// транслитерировать.
 ///
 /// `Some(decision)` — клавиша наша; `None` — пусть идёт дальше.
 fn handle_correction_hotkeys(
@@ -635,6 +637,16 @@ fn handle_correction_hotkeys(
     {
         tracing::debug!(target: "klavium", "хоткей: исправить выделенное");
         engine.request_fix_selection();
+        return Some(hook::HookDecision::Suppress);
+    }
+
+    // Транслитерация выделенного текста или последнего слова (7.7).
+    if hotkeys
+        .translit
+        .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
+    {
+        tracing::debug!(target: "klavium", "хоткей: транслитерация");
+        engine.request_translit();
         return Some(hook::HookDecision::Suppress);
     }
     None

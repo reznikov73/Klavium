@@ -210,5 +210,14 @@ fn handle_event(event: EngineEvent, overlay: &OverlayHandle) {
             overlay.hide();
         }
         EngineEvent::WordStarted { .. } => {}
+        EngineEvent::TranslitApplied {
+            original,
+            converted,
+        } => {
+            println!("[demo] транслит: «{original}» → «{converted}»");
+        }
+        EngineEvent::TranslitSkipped { reason } => {
+            println!("[demo] транслит: {reason}");
+        }
     }
 }

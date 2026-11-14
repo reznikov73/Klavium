@@ -210,6 +210,8 @@ pub struct HotkeysConfig {
     pub correction_undo: String,
     /// Исправить выделенный текст (через буфер обмена).
     pub correction_selection: String,
+    /// Транслитерировать выделенное или последнее слово.
+    pub translit: String,
     /// Скрыть подсказку.
     /// Скрыть карточку «было → станет».
     pub card_hide: String,
@@ -225,6 +227,7 @@ impl Default for HotkeysConfig {
             correction_apply: "F8".to_string(),
             correction_undo: "Ctrl+Alt+Z".to_string(),
             correction_selection: "Ctrl+Alt+X".to_string(),
+            translit: "Ctrl+Alt+T".to_string(),
             card_hide: "Esc".to_string(),
             voice_toggle: "F9".to_string(),
             quit: "Ctrl+Shift+Q".to_string(),
