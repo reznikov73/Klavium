@@ -616,6 +616,17 @@ impl SettingsApp {
         }
         widgets::row_separator(ui);
 
+        let mut typography = self.config.correction.typography;
+        if widgets::setting_row(
+            ui,
+            "Типографика при перекодировке",
+            Some("Кавычки «ёлочки», длинное тире и многоточие в выделенном тексте"),
+            |ui| widgets::switch(ui, &mut typography),
+        ) {
+            self.config.correction.typography = typography;
+        }
+        widgets::row_separator(ui);
+
         let mut threshold = self.config.correction.threshold;
         if widgets::setting_row(
             ui,
@@ -1869,6 +1880,7 @@ enum HotkeyField {
     CorrectionApply,
     CorrectionUndo,
     CorrectionSelection,
+    FixField,
     Translit,
     CardHide,
     VoiceToggle,
@@ -1876,10 +1888,11 @@ enum HotkeyField {
 }
 
 impl HotkeyField {
-    const ALL: [Self; 7] = [
+    const ALL: [Self; 8] = [
         Self::CorrectionApply,
         Self::CorrectionUndo,
         Self::CorrectionSelection,
+        Self::FixField,
         Self::Translit,
         Self::CardHide,
         Self::VoiceToggle,
@@ -1891,6 +1904,7 @@ impl HotkeyField {
             Self::CorrectionApply => "Применить исправление",
             Self::CorrectionUndo => "Отменить исправление",
             Self::CorrectionSelection => "Исправить выделенное",
+            Self::FixField => "Исправить всё поле",
             Self::Translit => "Транслитерация",
             Self::CardHide => "Скрыть подсказку",
             Self::VoiceToggle => "Голосовой ввод",
@@ -1903,6 +1917,9 @@ impl HotkeyField {
             Self::CorrectionApply => "Срабатывает, только когда есть что исправлять.",
             Self::CorrectionUndo => {
                 "Возвращает исходное слово и раскладку после исправления (до минуты)."
+            }
+            Self::FixField => {
+                "Выделяет всё в окне и перекодирует — удобно для больших абзацев."
             }
             Self::CorrectionSelection => {
                 "Перекодирует выделенный текст через буфер обмена (выделение — Ctrl+A и т.п.)."
@@ -1923,6 +1940,7 @@ impl HotkeyField {
             Self::CorrectionApply => "F8",
             Self::CorrectionUndo => "Ctrl+Alt+Z",
             Self::CorrectionSelection => "Ctrl+Alt+X",
+            Self::FixField => "Ctrl+Alt+A",
             Self::Translit => "Ctrl+Alt+T",
             Self::CardHide => "Esc",
             Self::VoiceToggle => "F9",
@@ -1935,6 +1953,7 @@ impl HotkeyField {
             Self::CorrectionApply => config.hotkeys.correction_apply.as_str(),
             Self::CorrectionUndo => config.hotkeys.correction_undo.as_str(),
             Self::CorrectionSelection => config.hotkeys.correction_selection.as_str(),
+            Self::FixField => config.hotkeys.fix_field.as_str(),
             Self::Translit => config.hotkeys.translit.as_str(),
             Self::CardHide => config.hotkeys.card_hide.as_str(),
             Self::VoiceToggle => config.hotkeys.voice_toggle.as_str(),
@@ -1947,6 +1966,7 @@ impl HotkeyField {
             Self::CorrectionApply => &mut config.hotkeys.correction_apply,
             Self::CorrectionUndo => &mut config.hotkeys.correction_undo,
             Self::CorrectionSelection => &mut config.hotkeys.correction_selection,
+            Self::FixField => &mut config.hotkeys.fix_field,
             Self::Translit => &mut config.hotkeys.translit,
             Self::CardHide => &mut config.hotkeys.card_hide,
             Self::VoiceToggle => &mut config.hotkeys.voice_toggle,

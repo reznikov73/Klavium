@@ -89,6 +89,10 @@ pub trait EngineIo: Send + Sync {
     fn copy_selection(&self) -> Option<String> {
         None
     }
+    /// Выделить всё в активном окне (`Ctrl+A`). `true` — команда отправлена.
+    fn select_all(&self) -> bool {
+        false
+    }
     /// Текущее состояние модификаторов.
     fn modifiers(&self) -> Modifiers;
     /// Имя процесса активного окна (без `.exe`) — для правил приложений.
@@ -133,6 +137,8 @@ pub struct EngineConfig {
     pub snippets: Vec<Snippet>,
     /// Запоминать слова, исправление которых отменили (стоп-лист).
     pub learn_on_undo: bool,
+    /// Приводить типографику к языку текста.
+    pub typography: bool,
     /// Выполнять задания синхронно (используется тестами).
     pub run_jobs_inline: bool,
 }
@@ -150,6 +156,7 @@ impl Default for EngineConfig {
             app_rules: Vec::new(),
             snippets: Vec::new(),
             learn_on_undo: true,
+            typography: true,
             run_jobs_inline: false,
         }
     }
@@ -291,6 +298,8 @@ enum Job {
     },
     Undo,
     FixSelection,
+    /// Исправить всё поле: выделить всё и перекодировать.
+    FixField,
     Translit,
     VoiceInsert {
         text: String,
@@ -529,6 +538,11 @@ impl CorrectionEngine {
         self.submit_job(Job::FixSelection);
     }
 
+    /// Исправить весь текст поля (без предварительного выделения). Неблокирующе.
+    pub fn request_fix_field(&self) {
+        self.submit_job(Job::FixField);
+    }
+
     /// Транслитерировать выделенное или последнее слово. Неблокирующе.
     pub fn request_translit(&self) {
         self.submit_job(Job::Translit);
@@ -650,6 +664,7 @@ impl CorrectionEngine {
             }
             Job::Undo => self.undo_last(),
             Job::FixSelection => self.perform_fix_selection(),
+            Job::FixField => self.perform_fix_field(),
             Job::Translit => self.perform_translit(),
             Job::VoiceInsert { text } => self.perform_voice_insert(&text),
             Job::InsertSnippet { erase, old, text } => {
@@ -937,6 +952,27 @@ impl CorrectionEngine {
             "сниппет: «{old}» → {} символов",
             text.chars().count()
         );
+    }
+
+    /// Привести кавычки, тире и многоточие к языку результата.
+    fn apply_typography(&self, text: String) -> String {
+        if !self.config().typography {
+            return text;
+        }
+        let target = match detect_language(&text).0 {
+            Some(Layout::Ru) => Layout::Ru,
+            _ => Layout::En,
+        };
+        klavium_core::typography::typography(&text, target)
+    }
+
+    /// Исправить всё поле: выделить всё и перекодировать через буфер.
+    fn perform_fix_field(&self) {
+        if !self.io.select_all() {
+            self.notice("Не удалось выделить текст в окне");
+            return;
+        }
+        self.perform_fix_selection();
     }
 
     /// Завершить текущее слово: анализ, постановка ошибки в очередь.
@@ -1256,11 +1292,12 @@ impl CorrectionEngine {
             self.notice("Нечего исправлять: нет выделения");
             return;
         };
-        let Some(converted) = fix_selection_text(&selected) else {
+        let Some(converted) = fix_selection_text(&selected, self.config().typography) else {
             tracing::info!(target: "klavium", "выделенное: раскладка не определена — пропуск");
             self.notice("Не удалось определить раскладку выделенного");
             return;
         };
+        let converted = self.apply_typography(converted);
         let target = self.io.capture_target();
         let _guard = SuppressGuard::new(&self.suppress);
         let _ = self.io.restore_target(&target);
@@ -1586,7 +1623,7 @@ const fn is_cyrillic(c: char) -> bool {
 /// Работает только при уверенном определении языка: смесь латиницы и кириллицы
 /// или слишком короткий фрагмент — `None` (лучше не трогать, чем испортить).
 #[must_use]
-fn fix_selection_text(text: &str) -> Option<String> {
+fn fix_selection_text(text: &str, apply_typography: bool) -> Option<String> {
     if text.trim().is_empty() {
         return None;
     }
@@ -1594,12 +1631,21 @@ fn fix_selection_text(text: &str) -> Option<String> {
     if confidence < 0.6 {
         return None;
     }
-    let converted = match layout? {
-        // Знаки препинания тоже возвращаем в целевую раскладку:
-        // запятая, набранная в английской раскладке, выглядит как «?».
-        Layout::En => convert::convert_selection(text, Layout::En, Layout::Ru),
-        Layout::Ru => convert::convert_selection(text, Layout::Ru, Layout::En),
+    let source = layout?;
+    let target = source.opposite();
+    // Типографика для русского — ДО перекодировки: иначе прямая кавычка
+    // уйдёт в букву «Э» (одна клавиша), и восстанавливать будет нечего.
+    let prepared = if apply_typography && target == Layout::Ru {
+        klavium_core::typography::typography(text, Layout::Ru)
+    } else {
+        text.to_string()
     };
+    // Знаки препинания тоже возвращаем в целевую раскладку:
+    // запятая, набранная в английской раскладке, выглядит как «?».
+    let mut converted = convert::convert_selection(&prepared, source, target);
+    if apply_typography && target == Layout::En {
+        converted = klavium_core::typography::typography(&converted, Layout::En);
+    }
     (converted != text).then_some(converted)
 }
 
@@ -1691,6 +1737,7 @@ mod tests {
         Backspaces(u32),
         Switch(Layout),
         Text(String),
+        SelectAll,
     }
 
     struct MockIoState {
@@ -1752,6 +1799,11 @@ mod tests {
         }
         fn copy_selection(&self) -> Option<String> {
             self.0.lock().unwrap().selection.clone()
+        }
+
+        fn select_all(&self) -> bool {
+            self.0.lock().unwrap().ops.push(Op::SelectAll);
+            true
         }
         fn capture_target(&self) -> StoredTarget {
             self.0.lock().unwrap().target
@@ -1926,21 +1978,21 @@ mod tests {
     #[test]
     fn test_fix_selection_text_converts_both_ways() {
         assert_eq!(
-            fix_selection_text("ghbdtn dctv"),
+            fix_selection_text("ghbdtn dctv", false),
             Some("привет всем".to_string())
         );
         assert_eq!(
-            fix_selection_text("привет всем"),
+            fix_selection_text("привет всем", false),
             Some("ghbdtn dctv".to_string())
         );
     }
 
     #[test]
     fn test_fix_selection_text_skips_ambiguous_and_empty() {
-        assert_eq!(fix_selection_text(""), None);
-        assert_eq!(fix_selection_text("    "), None);
+        assert_eq!(fix_selection_text("", false), None);
+        assert_eq!(fix_selection_text("    ", false), None);
         // Смесь латиницы и кириллицы — не трогаем.
-        assert_eq!(fix_selection_text("ghbdtn привет"), None);
+        assert_eq!(fix_selection_text("ghbdtn привет", false), None);
     }
 
     #[test]
@@ -1963,6 +2015,51 @@ mod tests {
         let before = io.ops().len();
         engine.request_fix_selection();
         assert_eq!(io.ops().len(), before, "без выделения ничего не вводим");
+    }
+
+    #[test]
+    fn test_fix_field_selects_all_and_converts() {
+        let (engine, io, _events) = make_engine();
+        io.set_selection(Some("ghbdtn vbh"));
+
+        engine.request_fix_field();
+
+        let ops = io.ops();
+        assert!(ops.contains(&Op::SelectAll), "сначала Ctrl+A: {ops:?}");
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "привет мир")),
+            "ops: {ops:?}"
+        );
+    }
+
+    #[test]
+    fn test_fix_field_without_text_notifies() {
+        let (engine, io, events) = make_engine();
+        io.set_selection(None);
+
+        engine.request_fix_field();
+
+        assert!(matches!(
+            recv_meaningful(&events),
+            EngineEvent::Notice { .. }
+        ));
+    }
+
+    #[test]
+    fn test_selection_conversion_applies_typography() {
+        let (engine, io, _events) = make_engine();
+        // В английской раскладке прямая кавычка и дефис с пробелами.
+        io.set_selection(Some("\"ghbdtn\" - vbh"));
+
+        engine.request_fix_selection();
+
+        let ops = io.ops();
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, Op::Text(text) if text == "«привет» — мир")),
+            "ops: {ops:?}"
+        );
     }
 
     #[test]

@@ -53,10 +53,11 @@ fn log_startup(paths: &config_io::DataPaths) {
 fn log_hotkeys(config: &AppConfig) {
     tracing::info!(
         target: "klavium",
-        "хоткеи: исправление={}, отмена={}, выделенное={}, транслит={}, подсказка={}, голос={}, выход={}",
+        "хоткеи: исправление={}, отмена={}, выделенное={}, поле={}, транслит={}, подсказка={}, голос={}, выход={}",
         config.hotkeys.correction_apply,
         config.hotkeys.correction_undo,
         config.hotkeys.correction_selection,
+        config.hotkeys.fix_field,
         config.hotkeys.translit,
         config.hotkeys.card_hide,
         config.hotkeys.voice_toggle,
@@ -659,6 +660,16 @@ fn handle_correction_hotkeys(
     {
         tracing::debug!(target: "klavium", "хоткей: транслитерация");
         engine.request_translit();
+        return Some(hook::HookDecision::Suppress);
+    }
+
+    // Исправить всё поле целиком: выделяем всё и перекодируем.
+    if hotkeys
+        .fix_field
+        .is_some_and(|hotkey| hotkey.matches(event.vk_code, event.scan_code, modifiers))
+    {
+        tracing::debug!(target: "klavium", "хоткей: исправить всё поле");
+        engine.request_fix_field();
         return Some(hook::HookDecision::Suppress);
     }
     None

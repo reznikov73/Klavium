@@ -212,6 +212,8 @@ pub struct HotkeysConfig {
     pub correction_selection: String,
     /// Транслитерировать выделенное или последнее слово.
     pub translit: String,
+    /// Исправить всё поле целиком (без предварительного выделения).
+    pub fix_field: String,
     /// Скрыть подсказку.
     /// Скрыть карточку «было → станет».
     pub card_hide: String,
@@ -228,6 +230,7 @@ impl Default for HotkeysConfig {
             correction_undo: "Ctrl+Alt+Z".to_string(),
             correction_selection: "Ctrl+Alt+X".to_string(),
             translit: "Ctrl+Alt+T".to_string(),
+            fix_field: "Ctrl+Alt+A".to_string(),
             card_hide: "Esc".to_string(),
             voice_toggle: "F9".to_string(),
             quit: "Ctrl+Shift+Q".to_string(),
@@ -271,6 +274,8 @@ pub struct CorrectionConfig {
     pub app_rules: Vec<AppRule>,
     /// Запоминать слова, исправление которых отменили (стоп-лист).
     pub learn_on_undo: bool,
+    /// Приводить кавычки, тире и многоточие к языку текста.
+    pub typography: bool,
 }
 
 impl Default for CorrectionConfig {
@@ -282,6 +287,7 @@ impl Default for CorrectionConfig {
             show_notifications: true,
             app_rules: Vec::new(),
             learn_on_undo: true,
+            typography: true,
         }
     }
 }

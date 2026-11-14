@@ -51,6 +51,8 @@ public static class Typist
             Send(Scan(scans[i], false));
             System.Threading.Thread.Sleep(delayMs);
             if (shifts[i] != 0) { Send(Scan(0x2A, false)); System.Threading.Thread.Sleep(12); }
+            // Каждые 150 клавиш — пауза: очередь ввода Notepad переполняется.
+            if (i > 0 && i % 150 == 0) { System.Threading.Thread.Sleep(350); }
         }
     }
     public static void Combo(ushort mod1, ushort mod2, ushort scan)
@@ -74,11 +76,10 @@ $source = @'
 – Ах, не говорите мне про Австрию! Я ничего не понимаю, может быть, но Австрия никогда не хотела и не хочет войны. Она предает нас. Россия одна должна быть спасительницей Европы. Наш благодетель знает свое высокое призвание и будет верен ему. Вот одно, во что я верю. Нашему доброму и чудному государю предстоит величайшая роль в мире, и он так добродетелен и хорош, что Бог не оставит его, и он исполнит свое призвание задавить гидру революции, которая теперь еще ужаснее в лице этого убийцы и злодея. Мы одни должны искупить кровь праведника. На кого нам надеяться, я вас спрашиваю?.. Англия с своим коммерческим духом не поймет и не может понять всю высоту души императора Александра. Она отказалась очистить Мальту. Она хочет видеть, ищет заднюю мысль наших действий. Что они сказали Новосильцеву? Ничего. Они не поняли, они не могут понять самоотвержения нашего императора, который ничего не хочет для себя и все хочет для блага мира. И что они обещали? Ничего. И что обещали, и того не будет! Пруссия уже объявила, что Бонапарте непобедим и что вся Европа ничего не может против него… И я не верю ни в одном слове ни Гарденбергу, ни Гаугвицу. Я верю в одного Бога и в высокую судьбу нашего милого императора. Он спасет Европу!.. – Она вдруг остановилась с улыбкой насмешки над своею горячностью.
 '@
 
-# Ожидаемый результат: буквы русские, кавычки — обычные, тире — дефис.
+# Ожидаемый результат: буквы русские, типографика — как в исходнике (ёлочки, длинное тире).
+# Типографика включена по умолчанию: «ёлочки» остаются ёлочками, «–» становится «—».
 $expected = $source.
-    Replace([string][char]0x00AB, '"').Replace([string][char]0x00BB, '"').
-    Replace([string][char]0x2013, '-').Replace([string][char]0x2014, '-').
-    Replace([string][char]0x2026, '...')
+    Replace([string][char]0x2013, [string][char]0x2014)
 
 # Что набирает человек, печатающий этот текст в английской раскладке:
 # кавычка — это Shift+2, то есть в EN получается '@'.
@@ -167,12 +168,13 @@ $p = Start-Process notepad -PassThru
 Start-Sleep -Milliseconds 2500
 $p.Refresh()
 $h = $p.MainWindowHandle
-[Typist]::Force($h); Start-Sleep -Milliseconds 600
-[Typist]::SetEn($h); Start-Sleep -Milliseconds 700
+[Typist]::Force($h); Start-Sleep -Milliseconds 1200
+[Typist]::SetEn($h); Start-Sleep -Milliseconds 900
 "раскладка окна: $([Typist]::Layout($h))"
+Start-Sleep -Milliseconds 800
 
 $sw = [System.Diagnostics.Stopwatch]::StartNew()
-[Typist]::TypeAll($scans.ToArray(), $shifts.ToArray(), 6)
+[Typist]::TypeAll($scans.ToArray(), $shifts.ToArray(), 15)
 $sw.Stop()
 "набор: $([int]$sw.Elapsed.TotalSeconds) с"
 Pump -Ms 1200
@@ -189,6 +191,11 @@ $diff = 0
 $limit = [Math]::Min($typed.Length, $intendedText.Length)
 for ($i = 0; $i -lt $limit; $i++) { if ($typed[$i] -cne $intendedText[$i]) { $diff++ } }
 "расхождений с задуманным при наборе: $diff"
+if ($typed.Length -ne $intendedText.Length -or $diff -gt 0) {
+    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    "FAIL: текст набрался не полностью — Notepad не успевает принимать поток клавиш"
+    exit 1
+}
 
 [Typist]::Combo(0x11, 0x00, 0x1E); Start-Sleep -Milliseconds 500
 [Typist]::Combo(0x11, 0x12, 0x2D)

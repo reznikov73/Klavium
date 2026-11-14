@@ -36,6 +36,7 @@ pub fn engine_config(config: &AppConfig) -> EngineConfig {
         app_rules: config.correction.app_rules.clone(),
         snippets: klavium_core::config::valid_snippets(&config.snippets),
         learn_on_undo: config.correction.learn_on_undo,
+        typography: config.correction.typography,
         paste_threshold: 40,
         paste_long_text: config.voice.paste_long_text,
         run_jobs_inline: false,

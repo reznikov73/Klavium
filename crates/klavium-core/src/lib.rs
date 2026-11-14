@@ -10,6 +10,7 @@
 //! - `hotkeys` — горячие клавиши: разбор и сопоставление.
 //! - `config` — модель конфигурации приложения (сериализуемая).
 //! - `stats` — данные статистики (сериализуемые).
+//! - `typography` — кавычки, тире и многоточие под язык текста.
 //!
 //! # Архитектурный принцип
 //!
@@ -30,6 +31,7 @@ pub mod keys;
 pub mod layout;
 pub mod maps;
 pub mod stats;
+pub mod typography;
 pub mod voice;
 
 pub use layout::Layout;

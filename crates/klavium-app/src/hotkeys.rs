@@ -19,6 +19,8 @@ pub struct CompiledHotkeys {
     pub correction_selection: Option<Hotkey>,
     /// Транслитерировать выделенное или последнее слово.
     pub translit: Option<Hotkey>,
+    /// Исправить всё поле целиком.
+    pub fix_field: Option<Hotkey>,
     /// Скрыть карточку «было → станет».
     pub card_hide: Option<Hotkey>,
     /// Включить/выключить голосовой ввод.
@@ -43,6 +45,7 @@ impl CompiledHotkeys {
             correction_undo: parse_spec(&config.hotkeys.correction_undo),
             correction_selection: parse_spec(&config.hotkeys.correction_selection),
             translit: parse_spec(&config.hotkeys.translit),
+            fix_field: parse_spec(&config.hotkeys.fix_field),
             card_hide: parse_spec(&config.hotkeys.card_hide),
             voice_toggle: parse_spec(&config.hotkeys.voice_toggle),
             quit: parse_spec(&config.hotkeys.quit),

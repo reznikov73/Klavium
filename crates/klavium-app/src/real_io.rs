@@ -121,6 +121,10 @@ impl EngineIo for PlatformIo {
         inject::copy_selection()
     }
 
+    fn select_all(&self) -> bool {
+        inject::select_all().is_ok()
+    }
+
     fn modifiers(&self) -> Modifiers {
         current_modifiers()
     }

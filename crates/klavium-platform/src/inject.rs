@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
-    VIRTUAL_KEY, VK_BACK, VK_C, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL,
-    VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_TAB, VK_V,
+    VIRTUAL_KEY, VK_A, VK_BACK, VK_C, VK_CONTROL, VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN,
+    VK_RCONTROL, VK_RETURN, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_TAB, VK_V,
 };
 
 use crate::hook::{is_key_pressed, INJECT_EXTRA_INFO};
@@ -195,6 +195,25 @@ pub fn copy_selection() -> Option<String> {
     }
     let text = clipboard.get_text().ok()?;
     (!text.trim().is_empty()).then_some(text)
+}
+
+/// Выделить всё в активном окне (`Ctrl+A`).
+///
+/// Нужно кнопке «Исправить всё поле»: перед копированием выделения.
+///
+/// # Errors
+///
+/// Ошибка `SendInput`.
+pub fn select_all() -> anyhow::Result<()> {
+    release_modifiers();
+    send_inputs(&[
+        key_input(VK_CONTROL, 0, 0),
+        key_input(VK_A, 0, 0),
+        key_input(VK_A, 0, KEYEVENTF_KEYUP),
+        key_input(VK_CONTROL, 0, KEYEVENTF_KEYUP),
+    ])?;
+    sleep(Duration::from_millis(80));
+    Ok(())
 }
 
 /// Вставить текст через буфер обмена (`Ctrl+V`).
