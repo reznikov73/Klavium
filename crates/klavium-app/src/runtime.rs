@@ -53,6 +53,15 @@ pub fn spawn_engine_event_loop(
     })
 }
 
+/// Цвет нейтрального уведомления.
+const NOTICE_COLOR: (u8, u8, u8) = (37, 99, 235);
+
+/// Показать тост и продублировать в stdout (для консольных запусков).
+fn notify(overlay: &OverlayHandle, text: &str, color: (u8, u8, u8)) {
+    println!("[klavium] {text}");
+    overlay.show_toast(text, color);
+}
+
 /// Обработать событие движка.
 pub fn handle_event(event: EngineEvent, overlay: &OverlayHandle, services: &Services) {
     match event {
@@ -146,12 +155,11 @@ pub fn handle_event(event: EngineEvent, overlay: &OverlayHandle, services: &Serv
             original,
             converted,
         } => {
-            println!("[klavium] транслит: «{original}» → «{converted}»");
-            overlay.show_toast(&format!("{original} → {converted}"), (22, 163, 74));
+            notify(overlay, &format!("{original} → {converted}"), (22, 163, 74));
         }
         EngineEvent::TranslitSkipped { reason } => {
-            println!("[klavium] транслит: {reason}");
-            overlay.show_toast(&format!("Транслит: {reason}"), (37, 99, 235));
+            notify(overlay, &format!("Транслит: {reason}"), NOTICE_COLOR);
         }
+        EngineEvent::Notice { text } => notify(overlay, &text, NOTICE_COLOR),
     }
 }

@@ -219,5 +219,8 @@ fn handle_event(event: EngineEvent, overlay: &OverlayHandle) {
         EngineEvent::TranslitSkipped { reason } => {
             println!("[demo] транслит: {reason}");
         }
+        EngineEvent::Notice { text } => {
+            println!("[demo] {text}");
+        }
     }
 }

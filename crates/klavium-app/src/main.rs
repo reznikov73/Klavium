@@ -64,6 +64,17 @@ fn log_hotkeys(config: &AppConfig) {
     );
 }
 
+/// Падение писать в журнал: иначе сбой не оставляет следов.
+///
+/// Ставится после инициализации журнала — до неё писать некуда.
+fn install_panic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        let name = thread.name().unwrap_or("без имени");
+        tracing::error!(target: "klavium", "ПАНИКА в потоке «{name}»: {info}");
+    }));
+}
+
 /// Открыто ли окно настроек прямо сейчас (главный поток внутри eframe).
 static UI_OPEN: AtomicBool = AtomicBool::new(false);
 
@@ -91,6 +102,7 @@ fn main() -> anyhow::Result<()> {
         let _ = config_io::save(&paths.config_path, &config);
     }
     logging::init(&config, &paths.logs_dir())?;
+    install_panic_hook();
     log_startup(&paths);
     log_hotkeys(&config);
 

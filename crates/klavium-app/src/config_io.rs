@@ -260,6 +260,10 @@ fn migrate_legacy_hotkeys(config: &mut AppConfig, raw: &serde_json::Value) {
 
 /// Сохранить конфигурацию (pretty JSON; создаёт каталог при необходимости).
 ///
+/// Запись атомарная: сначала временный файл, затем переименование. Обрыв
+/// питания или падение в середине не оставят битый конфиг — на диске будет
+/// либо старая версия целиком, либо новая целиком. Предыдущая — в `.bak`.
+///
 /// # Errors
 ///
 /// Ошибка сериализации или записи файла.
@@ -268,7 +272,46 @@ pub fn save(path: &std::path::Path, config: &AppConfig) -> anyhow::Result<()> {
         std::fs::create_dir_all(parent)?;
     }
     let text = serde_json::to_string_pretty(config)?;
-    std::fs::write(path, text)?;
+    write_atomic(path, &text)?;
+    Ok(())
+}
+
+/// Временный файл для атомарной записи рядом с целевым.
+fn temp_path(path: &std::path::Path) -> std::path::PathBuf {
+    with_suffix(path, ".tmp")
+}
+
+/// Соседний файл с суффиксом: `config.json` → `config.json.bak`.
+fn with_suffix(path: &std::path::Path, suffix: &str) -> std::path::PathBuf {
+    let mut name = path.file_name().map_or_else(
+        || std::ffi::OsString::from("config.json"),
+        std::ffi::OsStr::to_os_string,
+    );
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
+/// Записать текст атомарно: `.tmp` рядом → сброс на диск → переименование.
+fn write_atomic(path: &std::path::Path, text: &str) -> anyhow::Result<()> {
+    use std::io::Write as _;
+
+    let tmp = temp_path(path);
+    let _ = std::fs::remove_file(&tmp);
+    {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        file.sync_all()?;
+    }
+
+    // Предыдущую версию сохраняем как резервную копию (не критично).
+    if path.exists() {
+        let _ = std::fs::copy(path, with_suffix(path, ".bak"));
+    }
+
+    if let Err(error) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -282,6 +325,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("тестовый каталог");
         dir
+    }
+
+    #[test]
+    fn test_save_is_atomic_and_keeps_backup() {
+        let dir = temp("save");
+        let path = dir.join("config.json");
+        let mut config = AppConfig::default();
+        save(&path, &config).expect("первое сохранение");
+        let first = std::fs::read_to_string(&path).expect("файл");
+
+        config.correction.threshold = 0.5;
+        save(&path, &config).expect("второе сохранение");
+
+        let second = std::fs::read_to_string(&path).expect("файл");
+        assert_ne!(first, second, "конфиг обновился");
+        assert!(
+            dir.join("config.json.bak").exists(),
+            "предыдущая версия осталась в .bak"
+        );
+        assert!(
+            !dir.join("config.json.tmp").exists(),
+            "временный файл убран"
+        );
+        let loaded: AppConfig = serde_json::from_str(&second).expect("валидный JSON");
+        assert_eq!(loaded.correction.threshold, 0.5);
     }
 
     #[test]

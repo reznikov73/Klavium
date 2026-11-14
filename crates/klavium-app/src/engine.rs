@@ -221,6 +221,11 @@ pub enum EngineEvent {
         /// Причина пропуска для пользователя.
         reason: String,
     },
+    /// Короткое уведомление пользователю (тост).
+    Notice {
+        /// Текст для тоста.
+        text: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1107,10 +1112,12 @@ impl CorrectionEngine {
         // Копируем в текущем фокусе: выделение уже там, куда смотрит пользователь.
         let Some(selected) = self.io.copy_selection() else {
             tracing::debug!(target: "klavium", "выделенное: пусто — нечего исправлять");
+            self.notice("Нечего исправлять: нет выделения");
             return;
         };
         let Some(converted) = fix_selection_text(&selected) else {
             tracing::info!(target: "klavium", "выделенное: раскладка не определена — пропуск");
+            self.notice("Не удалось определить раскладку выделенного");
             return;
         };
         let target = self.io.capture_target();
@@ -1219,6 +1226,14 @@ impl CorrectionEngine {
         if self.io.current_layout() != Some(target) {
             let _ = self.io.switch_layout(target);
         }
+    }
+
+    /// Показать короткое уведомление (тост).
+    fn notice(&self, text: &str) {
+        tracing::info!(target: "klavium", "уведомление: {text}");
+        let _ = self.events.send(EngineEvent::Notice {
+            text: text.to_string(),
+        });
     }
 
     /// Сообщить, что транслитерировать нечего (тост).
@@ -1793,6 +1808,19 @@ mod tests {
         let before = io.ops().len();
         engine.request_fix_selection();
         assert_eq!(io.ops().len(), before, "без выделения ничего не вводим");
+    }
+
+    #[test]
+    fn test_selection_fix_without_selection_notifies() {
+        let (engine, io, events) = make_engine();
+        io.set_selection(None);
+        engine.request_fix_selection();
+        match recv_meaningful(&events) {
+            EngineEvent::Notice { text } => {
+                assert!(text.contains("нет выделения"), "текст: {text}");
+            }
+            other => panic!("ожидали уведомление: {other:?}"),
+        }
     }
 
     #[test]
