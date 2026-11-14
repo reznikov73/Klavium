@@ -69,11 +69,50 @@ $nsiText = [System.IO.File]::ReadAllText($nsiPath, [System.Text.Encoding]::UTF8)
 $dist = Join-Path $root 'dist'
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
+# Подпись файлов (необязательно). Без сертификата Windows показывает
+# «неизвестный издатель», а SmartScreen предупреждает при запуске.
+# Сертификат задаётся путём к .pfx: $env:KLAVIUM_SIGN_CERT
+# (пароль — $env:KLAVIUM_SIGN_PASSWORD).
+$script:signCert = $env:KLAVIUM_SIGN_CERT
+function Sign-KlaviumFile {
+    param([string]$Path)
+    if (-not $script:signCert) { return }
+    if (-not (Test-Path $Path)) { throw "Нет файла для подписи: $Path" }
+
+    $signtool = (Get-Command signtool.exe -ErrorAction SilentlyContinue).Source
+    if (-not $signtool) {
+        foreach ($candidate in @(
+            "$env:ProgramFiles (x86)\Windows Kits\10\bin\x64\signtool.exe",
+            "$env:ProgramFiles (x86)\Windows Kits\10\bin\10.0.22621.0\x64\signtool.exe"
+        )) {
+            if (Test-Path $candidate) { $signtool = $candidate; break }
+        }
+    }
+    if (-not $signtool) {
+        throw 'signtool.exe не найден: установите Windows SDK или добавьте его в PATH'
+    }
+
+    $signArgs = @('sign', '/fd', 'SHA256', '/tr', 'http://timestamp.digicert.com', '/td', 'SHA256',
+        '/f', $script:signCert)
+    if ($env:KLAVIUM_SIGN_PASSWORD) { $args += @('/p', $env:KLAVIUM_SIGN_PASSWORD) }
+    & $signtool @signArgs $Path
+    if ($LASTEXITCODE -ne 0) { throw "Подпись не удалась: $Path" }
+    Write-Host "Подписано: $(Split-Path -Leaf $Path)"
+}
+
+# exe подписываем до упаковки — иначе в установщик попадёт неподписанный бинарник.
+Sign-KlaviumFile $exe
+
 & $makensis "/DVERSION=$Version" "/DSRCDIR=$root\target\release" `
     "/DOUTFILE=$dist\KlaviumSetup-$Version.exe" `
     "/DICONFILE=$root\crates\klavium-app\resources\klavium.ico" `
     (Join-Path $root 'installer\klavium.nsi')
 if ($LASTEXITCODE -ne 0) { throw 'makensis завершился с ошибкой' }
+
+Sign-KlaviumFile (Join-Path $dist "KlaviumSetup-$Version.exe")
+if (-not $script:signCert) {
+    Write-Host 'Подпись: KLAVIUM_SIGN_CERT не задан — Windows покажет «неизвестный издатель»'
+}
 
 # 3) Портативная версия (zip).
 $stage = Join-Path $env:TEMP "klavium-portable-$Version"

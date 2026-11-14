@@ -600,6 +600,17 @@ impl SettingsApp {
         }
         widgets::row_separator(ui);
 
+        let mut learn_on_undo = self.config.correction.learn_on_undo;
+        if widgets::setting_row(
+            ui,
+            "Запоминать отменённые слова",
+            Some("Отменили исправление — слово попадёт в стоп-лист и больше не будет исправляться"),
+            |ui| widgets::switch(ui, &mut learn_on_undo),
+        ) {
+            self.config.correction.learn_on_undo = learn_on_undo;
+        }
+        widgets::row_separator(ui);
+
         let mut threshold = self.config.correction.threshold;
         if widgets::setting_row(
             ui,

@@ -125,6 +125,8 @@ pub struct EngineConfig {
     pub word_timeout: Duration,
     /// Правила для отдельных приложений.
     pub app_rules: Vec<AppRule>,
+    /// Запоминать слова, исправление которых отменили (стоп-лист).
+    pub learn_on_undo: bool,
     /// Выполнять задания синхронно (используется тестами).
     pub run_jobs_inline: bool,
 }
@@ -140,6 +142,7 @@ impl Default for EngineConfig {
             paste_long_text: true,
             word_timeout: Duration::from_secs(5),
             app_rules: Vec::new(),
+            learn_on_undo: true,
             run_jobs_inline: false,
         }
     }
@@ -330,6 +333,9 @@ struct LastCorrection {
     target: StoredTarget,
     /// Когда исправляли (старше минуты не отменяем).
     at: Instant,
+    /// Слово как было набрано — что запомнить в стоп-лист при отмене.
+    /// `None` — пакетная правка (там учить нечему).
+    learn_word: Option<String>,
 }
 
 /// Движок коррекции. Создаётся один раз и разделяется между потоками.
@@ -1072,6 +1078,7 @@ impl CorrectionEngine {
             source_layout: original_layout,
             target: error.input_target,
             at: Instant::now(),
+            learn_word: Some(error.original.clone()),
         });
 
         {
@@ -1294,6 +1301,17 @@ impl CorrectionEngine {
             last.inserted,
             last.restore
         );
+
+        // Обучение на отмене: слово, которое не надо было трогать,
+        // уходит в стоп-лист словаря пользователя.
+        if self.config().learn_on_undo {
+            if let Some(word) = &last.learn_word {
+                if klavium_core::dicts::Dictionaries::add_forbidden_word(word) {
+                    tracing::info!(target: "klavium", "слово в стоп-лист: «{word}»");
+                    self.notice(&format!("Больше не исправляю: «{word}»"));
+                }
+            }
+        }
     }
 
     /// Пакетная коррекция: весь span от первой ошибки до курсора за один проход.
@@ -1362,6 +1380,7 @@ impl CorrectionEngine {
             source_layout: original_layout,
             target: first_target,
             at: Instant::now(),
+            learn_word: None,
         });
 
         {

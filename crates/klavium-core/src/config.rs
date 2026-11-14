@@ -255,6 +255,7 @@ impl Default for StatisticsConfig {
 }
 
 /// Коррекция раскладки.
+#[allow(clippy::struct_excessive_bools)] // плоский JSON-конфиг, группировать не стоит
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CorrectionConfig {
@@ -268,6 +269,8 @@ pub struct CorrectionConfig {
     pub show_notifications: bool,
     /// Правила для отдельных приложений (порядок = приоритет).
     pub app_rules: Vec<AppRule>,
+    /// Запоминать слова, исправление которых отменили (стоп-лист).
+    pub learn_on_undo: bool,
 }
 
 impl Default for CorrectionConfig {
@@ -278,6 +281,7 @@ impl Default for CorrectionConfig {
             auto_correct: false,
             show_notifications: true,
             app_rules: Vec::new(),
+            learn_on_undo: true,
         }
     }
 }

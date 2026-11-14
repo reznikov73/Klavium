@@ -153,6 +153,42 @@ impl Dictionaries {
         user_dict_snapshot().words.len()
     }
 
+    /// Добавить стоп-слово в словарь пользователя (`!слово`).
+    ///
+    /// Так работает обучение на отмене: если пользователь отменил
+    /// исправление, значит это слово трогать не нужно. Возвращает `true`,
+    /// если слово добавлено; `false` — уже было или файл недоступен.
+    pub fn add_forbidden_word(word: &str) -> bool {
+        let Some(path) = USER_PATH.get() else {
+            return false;
+        };
+        let word = normalize(word);
+        if word.chars().count() < 2 {
+            return false;
+        }
+        if user_dict_snapshot().forbidden.contains(&word) {
+            return false;
+        }
+
+        let mut text = std::fs::read_to_string(path).unwrap_or_default();
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push('!');
+        text.push_str(&word);
+        text.push('\n');
+        if std::fs::write(path, text).is_err() {
+            return false;
+        }
+        // Сбросить кэш: слово должно действовать сразу, а не через минуту.
+        if let Some(cache) = USER_CACHE.get() {
+            if let Ok(mut guard) = cache.lock() {
+                *guard = None;
+            }
+        }
+        true
+    }
+
     /// Получить общий экземпляр словарей (строится лениво, один раз за процесс).
     #[must_use]
     pub fn get() -> &'static Self {

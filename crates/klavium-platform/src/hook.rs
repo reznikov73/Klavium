@@ -118,12 +118,22 @@ static SLOW_CALLBACKS: AtomicU32 = AtomicU32::new(0);
 /// Сколько колбэк может работать, прежде чем напишем предупреждение.
 const SLOW_CALLBACK_MS: u128 = 50;
 
-/// Расхождение «система видела ввод» и «хук видел событие», после которого
-/// считаем хук потерянным (мс).
-const HOOK_LOST_MS: i32 = 5000;
-
 /// Не переустанавливаем хук чаще, чем раз в столько (мс).
 const REINSTALL_COOLDOWN_MS: u32 = 300_000;
+
+/// Расхождение, после которого считаем, что клавиатура до хука не доходит
+/// по-настоящему (мс). Ниже этого порога — обычная работа без набора
+/// (мышь обновляет `GetLastInputInfo`, а хук её не видит).
+const HOOK_DEAD_MS: i32 = 30_000;
+
+/// Идентификатор текущего потока хука (`0` — не установлен).
+static HOOK_THREAD_ID: AtomicU32 = AtomicU32::new(0);
+
+/// Жив ли поток хука (снимается при выходе из цикла сообщений).
+static HOOK_ALIVE: AtomicBool = AtomicBool::new(false);
+
+/// Сколько раз хук перезапускали автоматически (для журнала).
+static HOOK_RESTARTS: AtomicU32 = AtomicU32::new(0);
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code < 0 {
@@ -178,10 +188,11 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 }
 
 /// Установленный клавиатурный хук; снимается через [`KeyboardHook::uninstall`].
-pub struct KeyboardHook {
-    thread_id: u32,
-    join: Option<std::thread::JoinHandle<()>>,
-}
+///
+/// Поток хука может быть перезапущен сторожем (Windows снимает
+/// `WH_KEYBOARD_LL` после таймаута колбэка), поэтому состояние живёт
+/// в статиках, а не в этом значении.
+pub struct KeyboardHook;
 
 /// Установить глобальный клавиатурный хук.
 ///
@@ -203,16 +214,27 @@ pub fn install(
         *slot = Some(Box::new(callback));
     }
 
+    if let Err(error) = spawn_hook_thread() {
+        if let Ok(mut slot) = CALLBACK.lock() {
+            *slot = None;
+        }
+        return Err(error);
+    }
+    spawn_watchdog();
+    Ok(KeyboardHook)
+}
+
+/// Запустить поток хука; дождаться установки и вернуть id потока.
+///
+/// Callback берётся из глобального слота: при перезапуске он уже на месте.
+fn spawn_hook_thread() -> anyhow::Result<u32> {
     let (tx, rx) = mpsc::channel::<Result<u32, String>>();
-    let join = std::thread::Builder::new()
+    std::thread::Builder::new()
         .name("keyboard-hook".to_string())
         .spawn(move || {
             let module = unsafe { GetModuleHandleW(std::ptr::null()) };
             let hook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), module, 0) };
             if hook.is_null() {
-                if let Ok(mut slot) = CALLBACK.lock() {
-                    *slot = None;
-                }
                 let _ = tx.send(Err(format!("SetWindowsHookExW: ошибка {}", unsafe {
                     GetLastError()
                 })));
@@ -220,10 +242,11 @@ pub fn install(
             }
 
             let thread_id = unsafe { GetCurrentThreadId() };
+            HOOK_THREAD_ID.store(thread_id, Ordering::Relaxed);
+            HOOK_ALIVE.store(true, Ordering::Relaxed);
             LAST_EVENT_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
             tracing::info!(target: "klavium", "хук: установлен (поток {thread_id})");
             let _ = tx.send(Ok(thread_id));
-            spawn_watchdog(thread_id);
 
             let mut message: MSG = unsafe { std::mem::zeroed() };
             loop {
@@ -240,48 +263,62 @@ pub fn install(
             unsafe {
                 UnhookWindowsHookEx(hook);
             }
-            WATCHDOG_STOP.store(true, Ordering::Relaxed);
-            if let Ok(mut slot) = CALLBACK.lock() {
-                *slot = None;
-            }
+            HOOK_ALIVE.store(false, Ordering::Relaxed);
+            HOOK_THREAD_ID.store(0, Ordering::Relaxed);
         })?;
 
     match rx.recv() {
-        Ok(Ok(thread_id)) => Ok(KeyboardHook {
-            thread_id,
-            join: Some(join),
-        }),
-        Ok(Err(message)) => {
-            let _ = join.join();
-            anyhow::bail!(message);
-        }
-        Err(_) => {
-            let _ = join.join();
-            anyhow::bail!("поток хука завершился до установки");
+        Ok(Ok(thread_id)) => Ok(thread_id),
+        Ok(Err(message)) => anyhow::bail!(message),
+        Err(_) => anyhow::bail!("поток хука завершился до установки"),
+    }
+}
+
+/// Пересоздать поток хука: старый гасим через `WM_QUIT`, затем новый.
+///
+/// Переустановка «на месте» (Unhook + SetWindowsHookEx в том же потоке)
+/// в проверке убивала хук — поэтому именно новый поток.
+fn restart_hook() -> anyhow::Result<u32> {
+    let old = HOOK_THREAD_ID.load(Ordering::Relaxed);
+    if old != 0 {
+        unsafe {
+            PostThreadMessageW(old, WM_QUIT, 0, 0);
         }
     }
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while HOOK_ALIVE.load(Ordering::Relaxed) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    if HOOK_ALIVE.load(Ordering::Relaxed) {
+        anyhow::bail!("старый поток хука не завершился за 2 с");
+    }
+    spawn_hook_thread()
 }
 
 /// Флаг остановки сторожа.
 static WATCHDOG_STOP: AtomicBool = AtomicBool::new(false);
 
-/// Сторож хука: если в системе был ввод, а хук его не получил, —
-/// просит поток хука переустановить хук.
+/// Сторож хука: если в системе долго был ввод, а хук его не получил —
+/// пересоздаёт поток хука (Windows снимает `WH_KEYBOARD_LL` после таймаута
+/// колбэка, и тогда горячие клавиши молчат до перезапуска приложения).
 ///
-/// `GetLastInputInfo` обновляется и от мыши, поэтому при работе без
-/// клавиатуры возможны ложные срабатывания; они безвредны (переустановка
-/// занимает микросекунды) и ограничены паузой [`REINSTALL_COOLDOWN_MS`].
-fn spawn_watchdog(thread_id: u32) {
+/// `GetLastInputInfo` обновляется и от мыши, поэтому порог [`HOOK_DEAD_MS`]
+/// заметно выше «человеческого» — ложный перезапуск безвреден, но не должен
+/// случаться каждую минуту.
+fn spawn_watchdog() {
     WATCHDOG_STOP.store(false, Ordering::Relaxed);
     let spawn = std::thread::Builder::new()
         .name("hook-watchdog".to_string())
         .spawn(move || {
             let cooldown = Duration::from_millis(u64::from(REINSTALL_COOLDOWN_MS));
-            let mut last_warning = Instant::now()
+            let mut last_attempt = Instant::now()
                 .checked_sub(cooldown)
                 .unwrap_or_else(Instant::now);
             while !WATCHDOG_STOP.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(1000));
+                if CALLBACK.lock().map_or(true, |slot| slot.is_none()) {
+                    continue;
+                }
                 let Some(system_tick) = last_input_tick() else {
                     continue;
                 };
@@ -289,18 +326,24 @@ fn spawn_watchdog(thread_id: u32) {
                 // Знаковая разница: отрицательная — системный ввод старее
                 // нашего последнего события (это нормально).
                 let lag = system_tick.wrapping_sub(our_tick) as i32;
-                if lag < HOOK_LOST_MS || last_warning.elapsed() < cooldown {
+                if lag < HOOK_DEAD_MS || last_attempt.elapsed() < cooldown {
                     continue;
                 }
-                last_warning = Instant::now();
-                // Переустановка «на месте» (Unhook + SetWindowsHookEx в том же
-                // потоке) в проверке убивала хук — поэтому только сообщаем
-                // в журнал: проблема видна, лечится перезапуском приложения.
+                last_attempt = Instant::now();
+                let attempt = HOOK_RESTARTS.fetch_add(1, Ordering::Relaxed) + 1;
                 tracing::warn!(
                     target: "klavium",
-                    "хук: возможная потеря — ввод в системе есть, клавиатура до хука не доходит ({lag} мс)"
+                    "хук: ввод в системе есть, клавиатура до хука не доходит ({lag} мс) — пересоздаю поток (попытка {attempt})"
                 );
-                let _ = thread_id;
+                match restart_hook() {
+                    Ok(thread_id) => {
+                        tracing::info!(target: "klavium", "хук: поток пересоздан (поток {thread_id})");
+                    }
+                    Err(error) => tracing::error!(
+                        target: "klavium",
+                        "хук: пересоздать поток не удалось — {error}; нужен перезапуск приложения"
+                    ),
+                }
             }
         });
     if spawn.is_err() {
@@ -354,13 +397,20 @@ fn last_input_tick() -> Option<u32> {
 
 impl KeyboardHook {
     /// Снять хук и дождаться завершения потока хука.
-    pub fn uninstall(mut self) {
+    pub fn uninstall(self) {
         WATCHDOG_STOP.store(true, Ordering::Relaxed);
-        unsafe {
-            PostThreadMessageW(self.thread_id, WM_QUIT, 0, 0);
+        let thread_id = HOOK_THREAD_ID.load(Ordering::Relaxed);
+        if thread_id != 0 {
+            unsafe {
+                PostThreadMessageW(thread_id, WM_QUIT, 0, 0);
+            }
         }
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while HOOK_ALIVE.load(Ordering::Relaxed) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        if let Ok(mut slot) = CALLBACK.lock() {
+            *slot = None;
         }
     }
 }
