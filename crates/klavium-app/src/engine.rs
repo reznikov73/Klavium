@@ -1427,8 +1427,10 @@ fn fix_selection_text(text: &str) -> Option<String> {
         return None;
     }
     let converted = match layout? {
-        Layout::En => convert::convert_text(text),
-        Layout::Ru => convert::convert_text_reverse(text),
+        // Знаки препинания тоже возвращаем в целевую раскладку:
+        // запятая, набранная в английской раскладке, выглядит как «?».
+        Layout::En => convert::convert_selection(text, Layout::En, Layout::Ru),
+        Layout::Ru => convert::convert_selection(text, Layout::Ru, Layout::En),
     };
     (converted != text).then_some(converted)
 }

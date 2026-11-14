@@ -443,6 +443,50 @@ pub fn convert_single_letters(text: &str, from: Layout, to: Layout) -> String {
     out
 }
 
+/// Перекодировать выделенный текст: буквы, цифровые пары и знаки препинания.
+///
+/// Отличие от [`convert_text`]: там только таблица раскладки (71 пара),
+/// а знаки препинания, которые печатаются той же клавишей, но не входят
+/// в неё («?» — это «,», «/» — это «.»), остаются как были. Для выделенного
+/// текста это неверно: запятая, набранная в английской раскладке, выглядит
+/// как «?» и должна вернуться запятой.
+///
+/// Каждый символ проходит ровно одно преобразование: сначала буквенная
+/// таблица, затем — таблица знаков.
+///
+/// # Примеры
+///
+/// ```
+/// use klavium_core::convert::convert_selection;
+/// use klavium_core::Layout;
+///
+/// assert_eq!(
+///     convert_selection("ghbdtn? vbh/", Layout::En, Layout::Ru),
+///     "привет, мир."
+/// );
+/// ```
+#[must_use]
+pub fn convert_selection(text: &str, from: Layout, to: Layout) -> String {
+    let letters: fn(char) -> Option<char> = match (from, to) {
+        (Layout::Ru, Layout::En) => maps::ru_to_en,
+        (Layout::En, Layout::Ru) => maps::en_to_ru,
+        _ => return text.to_string(),
+    };
+    let from_layout = from.as_str();
+    let to_layout = to.as_str();
+
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        if let Some(mapped) = letters(ch) {
+            out.push(mapped);
+        } else {
+            let punct = convert_punct(&ch.to_string(), from_layout, to_layout);
+            out.push_str(&punct);
+        }
+    }
+    out
+}
+
 /// Общий посимвольный проход с сохранением регистра.
 ///
 /// Семантика:
@@ -754,6 +798,21 @@ mod tests {
             "ab я"
         );
         assert_eq!(convert_single_letters("", Layout::En, Layout::Ru), "");
+    }
+
+    #[test]
+    fn test_convert_selection_letters_and_punctuation() {
+        assert_eq!(
+            convert_selection("ghbdtn? vbh/", Layout::En, Layout::Ru),
+            "привет, мир."
+        );
+        assert_eq!(
+            convert_selection("привет, мир.", Layout::Ru, Layout::En),
+            "ghbdtn? vbh/"
+        );
+        // Символьные пары из буквенной таблицы действуют как раньше
+        assert_eq!(convert_selection("@", Layout::En, Layout::Ru), "\"");
+        assert_eq!(convert_selection("&", Layout::En, Layout::Ru), "?");
     }
 
     #[test]
