@@ -261,7 +261,73 @@ pub fn is_meaningful_russian(word: &str) -> bool {
     }
 
     // 4. Окончания
-    RU_ENDINGS.iter().any(|ending| word.ends_with(ending))
+    if RU_ENDINGS.iter().any(|ending| word.ends_with(ending)) {
+        return true;
+    }
+
+    // 5. Морфология по основе: в словаре лежит начальная форма,
+    // а в тексте — любая другая («раскладке» → «раскладк» + «а»).
+    stem_in_dictionary(&word)
+}
+
+/// Окончания, которые срезаются с формы, чтобы получить основу:
+/// падежи, числа, краткие формы. Только грамматика — смысловые концовки
+/// вроде «ость» или «ник» сюда не входят, иначе основа становится слишком короткой.
+const STEM_STRIP: &[&str] = &[
+    "а", "я", "о", "е", "у", "ю", "ы", "и", "ь", "й", "ом", "ем", "ой", "ей", "ою", "ею", "ах",
+    "ях", "ам", "ям", "ов", "ев", "ёв", "ия", "ию", "ии", "ье", "ья", "ью", "ьи", "ами", "ями",
+    "ого", "его", "ому", "ему", "ыми", "ими", "ую",
+];
+
+/// Окончания начальных форм: добавляются к основе при поиске в словаре.
+const STEM_JOIN: &[&str] = &[
+    "", "а", "я", "о", "е", "ы", "и", "ь", "й", "ая", "ое", "ый", "ий",
+];
+
+/// Минимальная длина проверяемого слова: «ушка» — уже не словоформа,
+/// а совпадение трёх букв основы («ушк» + «и» = «ушки»).
+const STEM_WORD_MIN_CHARS: usize = 5;
+/// Минимальная длина основы: короче — случайные совпадения.
+const STEM_MIN_CHARS: usize = 4;
+
+/// Есть ли в словаре слово, от которого образована эта форма.
+///
+/// Словарь хранит начальные формы («раскладка»), а в тексте встречаются
+/// любые («раскладке», «раскладками»). Проверяем основу: срезаем окончание
+/// формы и ищем основу с окончанием начальной формы. Правило намеренно узкое:
+/// короткие слова и основы не проверяются, иначе мусор («фывап») начинает
+/// считаться осмысленным и настоящие ошибки раскладки перестают исправляться.
+fn stem_in_dictionary(word: &str) -> bool {
+    if word.chars().count() < STEM_WORD_MIN_CHARS {
+        return false;
+    }
+    let dicts = Dictionaries::get();
+    let mut candidate = String::with_capacity(word.len() + 3);
+    for strip in STEM_STRIP {
+        let Some(stem) = word.strip_suffix(strip) else {
+            continue;
+        };
+        if stem.chars().count() < STEM_MIN_CHARS {
+            continue;
+        }
+        // Основа сама по себе — слово («столом» → «стол»).
+        if dicts.contains_russian(stem) {
+            return true;
+        }
+        for join in STEM_JOIN {
+            // Пустое окончание уже проверено, совпадающее со срезанным — это само слово.
+            if join.is_empty() || join == strip {
+                continue;
+            }
+            candidate.clear();
+            candidate.push_str(stem);
+            candidate.push_str(join);
+            if dicts.contains_russian(&candidate) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Проверить, что в русском слове нет запретных биграмм.
@@ -544,6 +610,17 @@ mod tests {
         assert!(is_meaningful_russian("раскладку"));
         assert!(is_meaningful_russian("закладку"));
         assert!(is_meaningful_russian("приветом"));
+        // Формы, которых нет в списке окончаний — по основе слова.
+        assert!(is_meaningful_russian("раскладке"));
+        assert!(is_meaningful_russian("раскладкою"));
+        assert!(is_meaningful_russian("книге"));
+        assert!(is_meaningful_russian("книгами"));
+        // Основа из трёх букв — уже не морфология: «ушки» есть в словаре,
+        // но «ушка» от него не образуется, а «eirf» → «ушка» должен остаться
+        // неосмысленным (иначе он исправляется с уверенностью 0.95).
+        assert!(!is_meaningful_russian("ушка"));
+        assert!(!is_meaningful_russian("фывап"));
+        assert!(!is_meaningful_russian("йцукен"));
         // Следы от знаков препинания словом не считаются
         assert!(!is_meaningful_russian("ююю"));
         assert!(!is_meaningful_russian("ааа"));
